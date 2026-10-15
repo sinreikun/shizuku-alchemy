@@ -1,26 +1,73 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💧</text></svg>"><title>しずく錬金工房 — 流体パズル</title></head>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0e1a">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💧</text></svg>">
+<title>しずく錬金工房 — 流体パズル & 実験室</title>
+</head>
 <body>
-<header><h1>💧 しずく錬金工房</h1><span class="sub">流れを設計する、セル流体パズル</span><span id="fps"></span></header>
-<main>
-  <aside class="left"><h2>ステージ</h2><div id="levels"></div></aside>
-  <section class="stage">
-    <div class="info"><h2 id="title"></h2><p id="story"></p><p id="hint"></p></div>
-    <div class="wrap"><canvas id="view"></canvas>
-      <div id="win" class="hidden"><div class="card"><div id="winstars"></div><h3>錬成成功！</h3><p id="winmsg"></p><button id="next">次のステージ ▶</button><button id="again">もう一度</button></div></div>
-      <div id="toast"></div>
+<div id="app">
+  <!-- ステージ選択 -->
+  <section id="menu" class="screen">
+    <div class="hero">
+      <div class="logo">💧</div>
+      <h1>しずく錬金工房</h1>
+      <p class="tag">流れを設計する、セル流体パズル ＆ 自由実験室</p>
+      <div class="hero-btns">
+        <button id="continue" class="btn primary big">▶ 続きから</button>
+        <button id="openLab" class="btn big">🧪 自由実験室</button>
+      </div>
+      <div id="overall" class="overall"></div>
+    </div>
+    <div id="chapters" class="chapters"></div>
+  </section>
+
+  <!-- プレイ画面 -->
+  <section id="play" class="screen hidden">
+    <header class="topbar">
+      <button id="back" class="btn icon" title="ステージ選択へ (Esc)">☰</button>
+      <div class="ttl"><span id="chap" class="chip"></span><h2 id="title"></h2></div>
+      <div class="ctrl">
+        <button id="undo" class="btn icon" title="元に戻す (Ctrl+Z)">↶</button>
+        <button id="redo" class="btn icon" title="やり直す (Ctrl+Y)">↷</button>
+        <span class="sep"></span>
+        <button id="go" class="btn primary"></button>
+        <button id="step" class="btn icon" title="1コマ進める (.)">⏭</button>
+        <button id="speed" class="btn icon" title="速度">1x</button>
+        <span class="sep"></span>
+        <button id="retry" class="btn" title="配置を残して流し直す (R)">↺ 流し直し</button>
+        <button id="wipe" class="btn" title="最初から">🧹</button>
+      </div>
+      <div id="perf" class="perf"></div>
+    </header>
+    <div class="layout">
+      <aside id="palette" class="panel palette"></aside>
+      <div id="stage" class="stage">
+        <canvas id="view"></canvas>
+        <div id="brief" class="brief"><p id="story"></p><p id="hint"></p><button id="briefClose" class="x">×</button></div>
+        <div class="zoom">
+          <button id="zin" class="btn icon" title="拡大">＋</button>
+          <button id="zfit" class="btn icon" title="全体表示 (F)">⤢</button>
+          <button id="zout" class="btn icon" title="縮小">－</button>
+        </div>
+        <div id="inspect" class="inspect"></div>
+        <div id="win" class="overlay hidden"><div class="card"><div id="winstars" class="stars"></div><h3>錬成成功！</h3><p id="winmsg"></p><p id="winlearn" class="learn"></p><div class="row"><button id="again" class="btn">もう一度</button><button id="next" class="btn primary">次へ ▶</button></div></div></div>
+        <div id="toast" class="toast"></div>
+      </div>
+      <aside id="side" class="panel side">
+        <section id="goalsBox"><h3>目標</h3><div id="goals"></div><div id="flow" class="muted"></div></section>
+        <section id="invBox"><h3>手持ち</h3><div id="inv" class="inv"></div></section>
+        <section><h3>ブラシ</h3><input id="brush" type="range" min="0" max="8" value="1"><div class="muted" id="brushv"></div></section>
+        <section><h3>表示</h3><div class="seg" id="viewmode"><button data-v="mat" class="on">物質</button><button data-v="temp">温度</button><button data-v="glow">発光オフ</button></div></section>
+        <section id="labBox"><h3>実験データ</h3><div class="grid2"><button id="save" class="btn">💾 保存</button><button id="load" class="btn">📂 読込</button><button id="export" class="btn">⬇ 書き出し</button><button id="import" class="btn">⬆ 読み込み</button></div><input type="file" id="file" accept=".json" hidden><label class="chk"><input type="checkbox" id="ambient"> 室温を -10℃ に</label></section>
+        <p class="help">左ドラッグ 描く ／ 右ドラッグ 消す<br>ホイール 拡大 ／ Space＋ドラッグ・中ボタン 移動<br>2本指 ピンチ・移動（タッチ）<br>Space 放水 ／ R 流し直し ／ Ctrl+Z 戻す</p>
+      </aside>
     </div>
   </section>
-  <aside class="right">
-    <h2>道具</h2><div id="tools"></div>
-    <div class="ink">壁インク <b id="ink"></b><div class="bar"><i id="inkbar"></i></div></div>
-    <div id="devs"></div>
-    <h2>目標</h2><div id="goals"></div>
-    <div id="flow"></div>
-    <div class="btns"><button id="go" class="primary"></button><button id="speed">⏩ 1x</button><button id="retry" title="R">↺ 流し直し</button><button id="wipe">🧹 全消し</button></div>
-    <p class="help">左ドラッグ: 描く ／ 右ドラッグ: 消す<br>Space: 放水・一時停止 ／ R: 流し直し</p>
-  </aside>
-</main>
+  <div id="tip" class="tip"></div>
+</div>
 <script type="module" src="/src/main.ts"></script>
-</body></html>
+</body>
+</html>
