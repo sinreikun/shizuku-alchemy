@@ -75,6 +75,14 @@ export class Mech {
     return true;
   }
 
+  /** 親から外して固定点にする（いまの世界姿勢を保つ） */
+  detach(id: number): boolean {
+    const c = this.byId(id); if (!c || c.parent < 0) return false;
+    this.computePoses(); const P = this.poses.get(id)!;
+    c.parent = -1; c.ox = P.x; c.oy = P.y; c.oa = P.a - c.bend;
+    return true;
+  }
+
   // ---------- 姿勢 ----------
   /** 親 p の子が乗る座標系（世界座標） */
   frameOf(p: MechNode): Pose { return this.childFrame(p, this.pose(p.id)!); }
@@ -128,10 +136,20 @@ export class Mech {
     return out;
   }
   isBody(n: MechNode) { return n.type === 'rect' || n.type === 'circle'; }
-  hitsGuide(): MechNode | null {
+  /** 根ごとのツリー（ノードid の配列、配置順で決定的） */
+  rootOf(n: MechNode): MechNode {
+    let q = n; for (let k = 0; k < 64; k++) { const p = q.parent >= 0 ? this.byId(q.parent) : undefined; if (!p) break; q = p; }
+    return q;
+  }
+  trees(): number[][] {
+    const m = new Map<number, number[]>();
+    for (const n of this.nodes) { const r = this.rootOf(n).id; const a = m.get(r); if (a) a.push(n.id); else m.set(r, [n.id]); }
+    return [...m.values()];
+  }
+  hitsGuide(only?: Set<number>): MechNode | null {
     const t = this.sim.t;
     for (const n of this.nodes) {
-      if (!this.isBody(n)) continue;
+      if (!this.isBody(n) || (only && !only.has(n.id))) continue;
       for (const i of this.bodyCells(n, this.poses.get(n.id)!)) if (t[i] === M.GUIDE) return n;
     }
     return null;
@@ -159,8 +177,12 @@ export class Mech {
       }
     }
     this.computePoses();
-    let hit = this.hitsGuide();
-    if (hit) {
+    // 衝突は機構ツリーごとに判定・対応する（ぶつかったツリーだけが戻る。独立した機構は動き続ける）
+    const trees = this.trees();
+    for (const tree of trees) {
+      const set = new Set(tree);
+      let hit = this.hitsGuide(set);
+      if (!hit) continue;
       // ばね・自由関節を曲げてガイドをかわす
       let jn: MechNode | undefined = hit;
       while (jn && jn.joint === 'fixed') jn = jn.parent >= 0 ? this.byId(jn.parent) : undefined;
@@ -169,13 +191,13 @@ export class Mech {
         for (const d of [0.04, -0.04, 0.08, -0.08, 0.16, -0.16, 0.3, -0.3]) {
           const nb = b0 + d; if (Math.abs(nb) > jn.bendMax) continue;
           jn.bend = nb; this.computePoses();
-          if (!this.hitsGuide()) { hit = null; jn.bendV = 0; break; }
+          if (!this.hitsGuide(set)) { hit = null; jn.bendV = 0; break; }
         }
-        if (hit) jn.bend = b0;
+        if (hit) { jn.bend = b0; this.computePoses(); }
       }
       if (hit) {
-        // 避けられない接触：駆動を戻す
-        this.nodes.forEach((n, k) => { [n.angle, n.ext, n.dir, n.bend, n.bendV] = save[k]; if (n.type === 'piston' && n.recip) n.dir = -n.dir; });
+        // 避けられない接触：このツリーの駆動だけを戻す
+        this.nodes.forEach((n, k) => { if (!set.has(n.id)) return; [n.angle, n.ext, n.dir, n.bend, n.bendV] = save[k]; if (n.type === 'piston' && n.recip) n.dir = -n.dir; });
         this.stalls++;
         this.computePoses();
       }

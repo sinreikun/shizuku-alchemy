@@ -1,7 +1,8 @@
 import './style.css';
 import { M, MATS, PROCESSES, PROCESS_MODES, type ProcessMode } from './sim';
 import { type Tool, type Level, type Inventory, DEVICE_MAT, isDeviceTool, starThresholds, SCALE } from './game';
-import { LEVELS, SANDBOX, CHAPTERS } from './levels';
+import { LEVELS, SANDBOX, CHAPTERS, LAB_PRESETS, LAB_LIMITS, clampLab } from './levels';
+import { initWindows, place as placeWindows, resetLayout } from './windows';
 import { NODE_NAMES, JOINT_NAMES, type JointType } from './mech';
 import { loadBrush, saveBrush, clampBrush, brushLabel } from './prefs';
 import type { GameState, FromWorker, ToWorker, NodeView } from './protocol';
@@ -63,10 +64,10 @@ let frameBusy = false, readyRes: (() => void) | null = null;
 worker.onmessage = (e: MessageEvent<FromWorker>) => {
   const m = e.data;
   if (m.type === 'ready') { st = m.state; frameBusy = false; buf = null; readyRes?.(); readyRes = null; hud(); return; }
-  if (m.type === 'opResult') { st = m.state; if (m.error) toast(m.error); pending.get(m.id)?.(m.result); pending.delete(m.id); hudSoon(); renderTree(); return; }
+  if (m.type === 'opResult') { st = m.state; syncCanvas(); if (m.error) toast(m.error); pending.get(m.id)?.(m.result); pending.delete(m.id); hudSoon(); renderTree(); return; }
   if (m.type === 'frame') {
     frameBusy = false;
-    if (!st || m.state.w !== st.w || m.state.h !== st.h) { st = m.state; return; }
+    if (!st || m.state.w !== st.w || m.state.h !== st.h) { st = m.state; syncCanvas(); return; }
     st = m.state;
     buf = m.buf; gbuf = m.gbuf;
     img.data.set(new Uint8ClampedArray(buf)); octx.putImageData(img, 0, 0);
@@ -88,6 +89,7 @@ let selected = 0;
 let selKey = '';
 const treeOpen = new Set<string>(); const treeClosed = new Set<string>();
 let treeSig = '';
+let treeDrag: { key: string; x: number; y: number; active: boolean; target: string | null } | null = null;
 function setSel(key: string) { selKey = key; selected = key.startsWith('n:') ? Number(key.slice(2)) : 0; renderNodePanel(); }
 let brush = loadBrush();
 let filterMat: number = M.WATER;
@@ -155,18 +157,95 @@ function renderMenu() {
   box.appendChild(lab);
 }
 
-async function startLevel(l: Level) {
-  level = l;
-  sandbox = l === SANDBOX;
-  if (!sandbox) prog.last = l.id;
-  saveProg();
-  const w = (l.w ?? 160) * SCALE, h = (l.h ?? 100) * SCALE;
+/** 盤面の画像バッファを用意（自由実験室の大きさ変更にも使う） */
+function allocCanvas(w: number, h: number) {
   off.width = glowC.width = w; off.height = glowC.height = h;
   img = octx.createImageData(w, h); gimg = gctx.createImageData(w, h);
   octx.fillStyle = '#0c0f1a'; octx.fillRect(0, 0, w, h); gctx.clearRect(0, 0, w, h);
+  buf = null; gbuf = null;
+}
+function syncCanvas() { if (st && (st.w !== off.width || st.h !== off.height)) { allocCanvas(st.w, st.h); resize(); fit(); labUI(); } }
+// ---------- 消しゴムの対象・モード ----------
+const ERASE_OBJS: [string, string, keyof Inventory][] = [['rotor', '回転モーター', 'rotor'], ['piston', 'ピストン', 'piston'], ['rect', '可動板', 'plate'], ['circle', '可動円盤', 'plate'], ['heater', 'ヒーター', 'heater'], ['cooler', 'クーラー', 'cooler'], ['igniter', '着火器', 'igniter'], ['electro', '簡易電解板', 'electro'], ['proc', '循環装置', 'proc'], ['pump', 'ポンプ', 'pump']];
+const ERASE_KEY = 'shizuku-alchemy-eraser';
+type EraseMode = 'brush' | 'rect' | 'lasso';
+let eraseOff = new Set<number>(); let eraseObjs: Record<string, boolean> = {}; let eraseMode: EraseMode = 'brush';
+try { const v = JSON.parse(localStorage.getItem(ERASE_KEY) || 'null'); if (v) { eraseOff = new Set(v.off); eraseObjs = v.objs ?? {}; eraseMode = v.mode ?? 'brush'; } } catch { /* 既定 */ }
+const ALL_MATS = MATS.map((_, m) => m).filter((m) => MATS[m] && m !== M.EMPTY && m !== M.MOVER && m !== M.WALL);
+function eraseMatList() { return eraseOff.size ? ALL_MATS.filter((m) => !eraseOff.has(m)) : null; }
+function saveEraser() { localStorage.setItem(ERASE_KEY, JSON.stringify({ off: [...eraseOff], objs: eraseObjs, mode: eraseMode })); op('setEraseFilter', eraseMatList(), eraseObjs); }
+/** 消しゴムのウィンドウ：モードと、消す対象のチェックリスト（パレットと同じ分類） */
+function buildEraser() {
+  const box = $('#eraseBox'); box.style.display = tool === 'erase' ? '' : 'none';
+  if (tool !== 'erase') return;
+  const inv = level.inv;
+  const objs = ERASE_OBJS.filter(([, , k]) => sandbox || inv[k]);
+  const mats = sandbox ? ALL_MATS : [M.PWALL, M.FILTER, M.GUIDE].filter((m) => (m === M.PWALL && inv.ink) || (m === M.FILTER && inv.filter) || (m === M.GUIDE && inv.guide));
+  const groups = new Map<string, number[]>();
+  for (const m of mats) { const c = MATS[m].kind === 'device' ? '装置（セル）' : MATS[m].cat || '固体'; if (!groups.has(c)) groups.set(c, []); groups.get(c)!.push(m); }
+  const order = [...CATS, '装置（セル）'];
+  const gs = [...groups.entries()].sort((a, b) => (order.indexOf(a[0]) + 99) % 199 - (order.indexOf(b[0]) + 99) % 199);
+  const ck = (id: string, on: boolean, label: string, sw = '') => `<label><input type="checkbox" data-e="${id}" ${on ? 'checked' : ''}>${sw ? `<span class="sw" style="--sw:${sw}"></span>` : ''}${label}</label>`;
+  $('#erasePanel').innerHTML = `<div class="seg" id="emode">${([['brush', '🖌 筆'], ['rect', '▭ 矩形'], ['lasso', '➰ 投げ縄']] as const).map(([k, n]) => `<button data-m="${k}" class="${eraseMode === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <div class="ops"><button class="mini" data-op="all">全部</button><button class="mini" data-op="none">なし</button><button class="mini" data-op="inv">反転</button></div>
+    ${objs.length ? `<h4>配置物</h4><div class="cks">${objs.map(([k, n]) => ck('o:' + k, eraseObjs[k] !== false, n)).join('')}</div>` : ''}
+    ${gs.map(([c, ms]) => `<h4>${c}</h4><div class="cks">${ms.map((m) => ck('m:' + m, !eraseOff.has(m), MATS[m].name, css(m))).join('')}</div>`).join('')}
+    <div class="muted">チェックした物だけを消す。右ドラッグでも同じ設定で消せる。</div>`;
+  const P = $('#erasePanel');
+  P.querySelectorAll<HTMLButtonElement>('[data-m]').forEach((b) => b.onclick = () => { eraseMode = b.dataset.m as EraseMode; saveEraser(); buildEraser(); });
+  const set = (id: string, on: boolean) => { const [t, v] = id.split(':'); if (t === 'o') eraseObjs[v] = on; else if (on) eraseOff.delete(Number(v)); else eraseOff.add(Number(v)); };
+  P.querySelectorAll<HTMLInputElement>('input[data-e]').forEach((c) => c.onchange = () => { set(c.dataset.e!, c.checked); saveEraser(); });
+  P.querySelectorAll<HTMLButtonElement>('[data-op]').forEach((b) => b.onclick = () => {
+    P.querySelectorAll<HTMLInputElement>('input[data-e]').forEach((c) => { const on = b.dataset.op === 'all' ? true : b.dataset.op === 'none' ? false : !c.checked; set(c.dataset.e!, on); });
+    saveEraser(); buildEraser();
+  });
+}
+/** 範囲消し（矩形・投げ縄）のドラッグ */
+let region: { mode: EraseMode; pts: [number, number][] } | null = null;
+
+// ---------- 自由実験室の大きさ ----------
+const LAB_SIZE = 'shizuku-alchemy-lab-size';
+function labSize() { try { const v = JSON.parse(localStorage.getItem(LAB_SIZE) || 'null'); if (v) return clampLab(v.w, v.h); } catch { /* 既定 */ } return { w: 240, h: 150 }; }
+let labAnchor: [number, number] = [0.5, 1];
+function labUI() {
+  if (!st) return;
+  const cur = { w: st.w / SCALE, h: st.h / SCALE };
+  const pr = $('#labPresets'); pr.innerHTML = '';
+  for (const p of LAB_PRESETS) {
+    const b = document.createElement('button'); b.className = 'mini' + (p.w === cur.w && p.h === cur.h ? ' on' : ''); b.textContent = `${p.name} ${p.w}×${p.h}`;
+    b.onclick = () => { ($('#labW') as HTMLInputElement).value = String(p.w); ($('#labH') as HTMLInputElement).value = String(p.h); doLabResize(); };
+    pr.appendChild(b);
+  }
+  const W = $('#labW') as HTMLInputElement, H = $('#labH') as HTMLInputElement;
+  W.min = String(LAB_LIMITS.minW); W.max = String(LAB_LIMITS.maxW); H.min = String(LAB_LIMITS.minH); H.max = String(LAB_LIMITS.maxH);
+  if (document.activeElement !== W) W.value = String(cur.w); if (document.activeElement !== H) H.value = String(cur.h);
+  const an = $('#labAnchor'); an.innerHTML = '';
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) {
+    const b = document.createElement('button'); const v: [number, number] = [i / 2, j / 2];
+    b.className = v[0] === labAnchor[0] && v[1] === labAnchor[1] ? 'on' : ''; b.title = '中身をこの位置に寄せる';
+    b.onclick = () => { labAnchor = v; labUI(); }; an.appendChild(b);
+  }
+  $('#labInfo').textContent = `いま ${cur.w}×${cur.h}（実セル ${st.w}×${st.h}）・上限 ${LAB_LIMITS.maxW}×${LAB_LIMITS.maxH}`;
+}
+async function doLabResize() {
+  const c = clampLab(Number(($('#labW') as HTMLInputElement).value), Number(($('#labH') as HTMLInputElement).value));
+  await op('resizeLab', c.w, c.h, labAnchor[0], labAnchor[1]);
+  localStorage.setItem(LAB_SIZE, JSON.stringify(c));
+  syncCanvas(); selected = 0; selKey = ''; renderNodePanel(); hud();
+  toast(`実験台を ${c.w}×${c.h} にした`);
+}
+
+async function startLevel(l: Level) {
+  level = l;
+  sandbox = l.id === SANDBOX.id;
+  if (!sandbox) prog.last = l.id;
+  saveProg();
+  const ls = labSize();
+  allocCanvas((sandbox ? ls.w : l.w ?? 160) * SCALE, (sandbox ? ls.h : l.h ?? 100) * SCALE);
   brush = loadBrush();
   st = null;
-  await new Promise<void>((res) => { readyRes = res; send({ type: 'init', levelId: l.id, sandbox, seed: levelSeed(l.id), brush }); });
+  await new Promise<void>((res) => { readyRes = res; send({ type: 'init', levelId: l.id, sandbox, seed: levelSeed(l.id), brush, lw: ls.w, lh: ls.h }); });
+  op('setEraseFilter', eraseMatList(), eraseObjs);
   filterMat = l.filterMat ?? M.WATER;
   tool = sandbox ? 'mat:3' : 'wall';
   if (!sandbox && !l.inv.ink) tool = (availableTools()[1]?.tool ?? 'erase');
@@ -181,11 +260,13 @@ async function startLevel(l: Level) {
   $('#story').textContent = l.story; $('#hint').textContent = '💡 ' + l.hint;
   briefOpen = true; $('#brief').classList.remove('hidden');
   $('#labBox').style.display = sandbox ? '' : 'none';
+  if (sandbox) setTimeout(labUI, 0);
   $('#goalsBox').style.display = sandbox ? 'none' : '';
+  $('#w-status').style.display = sandbox ? 'none' : '';
   $('#invBox').style.display = sandbox ? 'none' : '';
   $('#scoreBox').style.display = sandbox ? 'none' : '';
   setBrush(brush);
-  resize(); fit();
+  resize(); placeWindows(); fit();
   buildPalette(); hud();
 }
 
@@ -244,6 +325,7 @@ function buildPalette() {
       box.appendChild(sel);
     }
   }
+  buildEraser();
   renderNodePanel();
 }
 
@@ -266,7 +348,9 @@ function renderNodePanel() {
     ${n.type === 'piston' ? `<label class="chk"><input type="checkbox" data-k="recip" ${n.recip ? 'checked' : ''} ${lock ? 'disabled' : ''}> 往復する</label>` : ''}
     ${n.parent > 0 ? `<div class="muted">関節</div><div class="seg">${(['fixed', 'free', 'spring'] as JointType[]).map((j) => `<button data-j="${j}" class="${n.joint === j ? 'on' : ''}">${JOINT_NAMES[j]}</button>`).join('')}</div>
       ${n.joint === 'spring' ? `<label class="rng">ばねの強さ <input type="range" data-k="k" min="1" max="20" step="0.5" value="${n.k}" ${lock ? 'disabled' : ''}></label>` : ''}` : ''}
-    ${lock ? '' : '<button class="btn danger" data-del="1">🗑 この機構（と子）を外す</button>'}`;
+    ${lock ? '' : `<label class="rng">親（付け替え）<select data-parent="1" class="num">${parentOptions(n)}</select></label>`}
+    ${lock ? '' : '<button class="btn danger" data-del="1" title="この機構と、付いている子をまとめて消す">🗑 削除</button>'}`;
+  body.querySelectorAll<HTMLSelectElement>('select[data-parent]').forEach((sel) => sel.onchange = () => reparent(n.id, Number(sel.value)));
   body.querySelectorAll<HTMLButtonElement>('[data-k="dir"]').forEach((b) => b.onclick = () => edit({ dir: -n.dir }));
   body.querySelectorAll<HTMLButtonElement>('[data-k="on"]').forEach((b) => b.onclick = () => edit({ on: !n.on }));
   body.querySelectorAll<HTMLInputElement>('input[type=range][data-k]').forEach((r) => r.onchange = () => edit({ [r.dataset.k!]: Number(r.value) }));
@@ -280,6 +364,19 @@ function renderNodePanel() {
   body.querySelectorAll<HTMLButtonElement>('[data-j]').forEach((b) => b.onclick = () => edit({ joint: b.dataset.j as JointType }));
   body.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) => b.onclick = async () => { await op('pushUndo'); await op('removeNode', n.id); selected = 0; renderNodePanel(); blip(220, 0.05); });
   async function edit(patch: Partial<NodeView>) { await op('pushUndo'); await op('editNode', n!.id, patch); renderNodePanel(); blip(560, 0.03); }
+}
+
+/** 付け替え先の候補（自分と子孫は除く＝循環しない） */
+function parentOptions(n: NodeView) {
+  const nodes = st!.nodes; const bad = new Set([n.id]);
+  let grew = true; while (grew) { grew = false; for (const q of nodes) if (!bad.has(q.id) && bad.has(q.parent)) { bad.add(q.id); grew = true; } }
+  return `<option value="-1" ${n.parent < 0 ? 'selected' : ''}>なし（固定点）</option>` + nodes.filter((q) => !bad.has(q.id)).map((q) => `<option value="${q.id}" ${q.id === n.parent ? 'selected' : ''}>${q.name || NODE_NAMES[q.type]}</option>`).join('');
+}
+async function reparent(id: number, parent: number) {
+  await op('pushUndo');
+  const ok = await op<boolean>('reparent', id, parent);
+  if (ok) { blip(600, 0.04); toast(parent < 0 ? '固定点にした' : '親を付け替えた'); } else { await op('undo'); toast('付け替えできない（自分の子には付けられない）'); }
+  renderNodePanel(); treeSig = ''; renderTree();
 }
 
 /** 機構以外（装置・循環装置・ポート・ポンプ）の調整パネル */
@@ -306,7 +403,7 @@ function renderObjPanel(box: HTMLElement, body: HTMLElement) {
 /** 配置物ツリー（親子・折りたたみ・選択の同期） */
 const TREE_ICON: Record<string, string> = { rotor: '⟳', piston: '⇕', rect: '▬', circle: '●', heater: '🔥', cooler: '❄', igniter: '✦', electro: '⚡', proc: '⚗', port: '◇', pump: '⛲', pumpEnd: '○' };
 function renderTree() {
-  const el = document.getElementById('tree'); if (!el || !st) return;
+  const el = document.getElementById('tree'); if (!el || !st || treeDrag) return;
   const sig = JSON.stringify(st.tree) + selKey + [...treeClosed].join();
   if (sig === treeSig) return; treeSig = sig;
   const count = (t: GameState['tree']): number => t.reduce((a, i) => a + (i.kind === 'port' || i.kind === 'pumpEnd' ? 0 : 1) + count(i.children), 0);
@@ -319,10 +416,35 @@ function renderTree() {
       + (has && !closed ? i.children.map((c) => row(c, depth + 1)).join('') : '');
   };
   el.innerHTML = st.tree.map((i) => row(i, 0)).join('');
-  el.querySelectorAll<HTMLElement>('.trow').forEach((r) => r.onclick = (e) => {
-    const tw = (e.target as HTMLElement).dataset.tw;
-    if (tw) { if (treeClosed.has(tw)) treeClosed.delete(tw); else treeClosed.add(tw); treeSig = ''; renderTree(); return; }
-    setSel(r.dataset.key!); blip(620, 0.03);
+  el.querySelectorAll<HTMLElement>('.trow').forEach((r) => {
+    r.onpointerdown = (e) => {
+      const tw = (e.target as HTMLElement).dataset.tw;
+      if (tw) { if (treeClosed.has(tw)) treeClosed.delete(tw); else treeClosed.add(tw); treeSig = ''; renderTree(); return; }
+      const key = r.dataset.key!;
+      treeDrag = { key, x: e.clientX, y: e.clientY, active: false, target: null };
+      r.setPointerCapture(e.pointerId);
+    };
+    r.onpointermove = (e) => {
+      const d = treeDrag; if (!d || !d.key.startsWith('n:')) return;
+      if (!d.active && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) { d.active = true; el.classList.add('dragging'); }
+      if (!d.active) return;
+      const over = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>('.trow, .tree');
+      el.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop'));
+      d.target = over?.classList.contains('trow') ? over.dataset.key! : over ? 'root' : null;
+      if (d.target && d.target !== 'root') over!.classList.add('drop'); else if (d.target === 'root') el.classList.add('droproot');
+      if (d.target !== 'root') el.classList.remove('droproot');
+    };
+    r.onpointerup = () => {
+      const d = treeDrag; treeDrag = null; el.classList.remove('dragging', 'droproot');
+      el.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop'));
+      if (!d) return;
+      if (!d.active) { setSel(d.key); blip(620, 0.03); return; }
+      const id = Number(d.key.slice(2));
+      if (d.target === 'root') reparent(id, -1);
+      else if (d.target?.startsWith('n:') && d.target !== d.key) reparent(id, Number(d.target.slice(2)));
+      else toast('機構（モーター・板）の上に落とすと付け替え、空いた所なら固定点');
+    };
+    r.onpointercancel = () => { treeDrag = null; el.classList.remove('dragging', 'droproot'); };
   });
   el.querySelector('.trow.on')?.scrollIntoView({ block: 'nearest' });
   void treeOpen;
@@ -387,8 +509,11 @@ function resize() {
 }
 function fit() {
   if (!off.width) return;
-  const s = Math.min(canvas.width / off.width, canvas.height / off.height) * 0.96;
-  cam.s = s; cam.x = (canvas.width - off.width * s) / 2; cam.y = (canvas.height - off.height * s) / 2;
+  // 広い画面では左右のウィンドウを避けて収める
+  const wide = canvas.width / dpr > 1000, L = wide ? 236 * dpr : 0, R = wide ? 262 * dpr : 0;
+  const aw = canvas.width - L - R;
+  const s = Math.min(aw / off.width, canvas.height / off.height) * 0.96;
+  cam.s = s; cam.x = L + (aw - off.width * s) / 2; cam.y = (canvas.height - off.height * s) / 2;
 }
 function zoomAt(f: number, sx: number, sy: number) {
   const ns = Math.max(0.8, Math.min(40, cam.s * f));
@@ -428,6 +553,7 @@ canvas.addEventListener('pointerdown', async (e) => {
   if (e.button === 1 || spaceHeld || (e.button === 0 && e.altKey)) { panning = true; spaceUsed = true; return; }
   erasing = e.button === 2 || tool === 'erase';
   const c = toCell(e.clientX, e.clientY);
+  if (erasing && eraseMode !== 'brush') { region = { mode: eraseMode, pts: [c] }; return; }
   if (!erasing && (tool === 'plate' || tool === 'piston')) { dragStart = c; return; }
   if (!erasing && (tool === 'select' || e.shiftKey)) {
     // 選択中のピストンの◇（最大まで伸びた先）をつかむとストローク変更
@@ -466,6 +592,12 @@ canvas.addEventListener('pointermove', async (e) => {
     return;
   }
   if (panning && prev) { cam.x += (e.clientX - prev.x) * dpr; cam.y += (e.clientY - prev.y) * dpr; return; }
+  if (region && pointers.size === 1) {
+    const c = hover, r = region;
+    if (r.mode === 'rect') r.pts = [r.pts[0], c];
+    else { const l = r.pts[r.pts.length - 1]; if (Math.hypot(c[0] - l[0], c[1] - l[1]) >= 1.5) r.pts.push(c); }
+    return;
+  }
   if (ampDrag && pointers.size === 1) {
     const n = st?.nodes.find((q) => q.id === ampDrag!.id); if (!n) return;
     const amp = (hover[0] + 0.5 - n.x) * Math.cos(n.a) + (hover[1] + 0.5 - n.y) * Math.sin(n.a);
@@ -509,6 +641,21 @@ const endPointer = async (e: PointerEvent) => {
       if (id) { feedback(b); selected = id; toast('ピストンを置いた（先端に板やモーターを付けよう）'); } else toast('ピストンが足りない');
     }
     renderNodePanel(); hud();
+  }
+  if (region && pointers.size === 0) {
+    const r = region; region = null;
+    let poly: number[] = [];
+    if (r.mode === 'rect') {
+      const [a, b] = [r.pts[0], r.pts[r.pts.length - 1]];
+      const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]) + 1, y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]) + 1;
+      poly = [x0, y0, x1, y0, x1, y1, x0, y1];
+    } else poly = r.pts.flatMap(([x, y]) => [x + 0.5, y + 0.5]);
+    if (poly.length >= 6) {
+      await op('pushUndo');
+      const n = await op<number>('eraseRegion', poly);
+      if (n) { blip(240, 0.06); toast(`${n} 個を消した`); } else { await op('undo'); toast('消せる物がなかった（対象のチェックを確認）'); }
+      hud();
+    }
   }
   if (pointers.size === 0) {
     if (moveDrag?.undo || ampDrag?.undo) { blip(520, 0.04); renderNodePanel(); }
@@ -603,7 +750,7 @@ document.querySelectorAll<HTMLButtonElement>('#viewmode button').forEach((b) => 
 ($('#ambient') as HTMLInputElement).onchange = (e) => { op('setAmbient', (e.target as HTMLInputElement).checked ? -10 : 20); };
 
 // 実験データの保存・書き出し（v3。旧 v2 の保存も読み込める）
-const loadLab = async (json: string) => { await op('deserialize', json); toast('読み込んだ'); };
+const loadLab = async (json: string) => { await op('deserialize', json); syncCanvas(); if (st) localStorage.setItem(LAB_SIZE, JSON.stringify({ w: st.w / SCALE, h: st.h / SCALE })); toast('読み込んだ'); };
 $('#save').onclick = async () => { try { localStorage.setItem(LAB_SAVE, await op<string>('serialize')); toast('ブラウザに保存した'); } catch { toast('保存できなかった'); } };
 $('#load').onclick = () => { const d = localStorage.getItem(LAB_SAVE) ?? localStorage.getItem(SAVE + '-lab'); if (!d) return toast('保存データがない'); loadLab(d); };
 $('#export').onclick = async () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([await op<string>('serialize')], { type: 'application/json' })); a.download = `shizuku-lab-${Date.now()}.json`; a.click(); };
@@ -793,6 +940,14 @@ function draw(now: number) {
       }
     }
   }
+  // 範囲消しの枠
+  if (region && region.pts.length) {
+    ctx.save(); ctx.strokeStyle = '#ff8a8a'; ctx.fillStyle = '#ff8a8a22'; ctx.lineWidth = 2 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]); ctx.lineDashOffset = -now / 30;
+    ctx.beginPath();
+    if (region.mode === 'rect') { const [a, b] = [region.pts[0], region.pts[region.pts.length - 1]]; const x0 = Math.min(a[0], b[0]), y0 = Math.min(a[1], b[1]); ctx.rect(x0 * S, y0 * S, (Math.abs(b[0] - a[0]) + 1) * S, (Math.abs(b[1] - a[1]) + 1) * S); }
+    else { region.pts.forEach(([x, y], k) => (k ? ctx.lineTo((x + 0.5) * S, (y + 0.5) * S) : ctx.moveTo((x + 0.5) * S, (y + 0.5) * S))); ctx.closePath(); }
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
   // ドラッグ中の板・ピストン
   if (dragStart && hover[0] >= 0) {
     ctx.strokeStyle = tool === 'plate' ? css(M.MOVER) : '#ffd27a'; ctx.lineWidth = Math.max(2, L); ctx.globalAlpha = 0.7;
@@ -830,7 +985,8 @@ function loop(now: number) {
     if (!frameBusy && img) {
       const n = Math.min(owed, 8); owed = Math.min(owed - n, 8);
       const b = buf ?? new ArrayBuffer(st.w * st.h * 4), gb = gbuf ?? new ArrayBuffer(st.w * st.h * 4);
-      if (b.byteLength === st.w * st.h * 4) {
+      if (b.byteLength !== st.w * st.h * 4 || gb.byteLength !== st.w * st.h * 4) { buf = null; gbuf = null; }
+      else {
         buf = null; gbuf = null; frameBusy = true;
         send({ type: 'frame', ticks: n, viewMode, now, buf: b, gbuf: gb, hover }, [b, gb]);
       }
@@ -844,6 +1000,18 @@ function loop(now: number) {
   requestAnimationFrame(loop);
 }
 window.addEventListener('resize', () => { if (st) { resize(); fit(); } });
+
+// 浮かぶウィンドウ（負の座標は右端・下端から）
+initWindows($('#layout'), [
+  { id: 'w-palette', title: '道具', x: 8, y: 8, w: 222, h: 560 },
+  { id: 'eraseBox', title: '消しゴムの対象', x: 238, y: 8, w: 270, h: 440 },
+  { id: 'w-status', title: '目標・評価・手持ち', x: -8, y: 8, w: 252, h: 330 },
+  { id: 'w-tree', title: '配置したもの', x: -8, y: 346, w: 252, h: 240 },
+  { id: 'nodeBox', title: '選択中の調整', x: -268, y: 8, w: 250, h: 360 },
+  { id: 'w-view', title: '表示・設定', x: -8, y: -8, w: 252, h: 330, min: true },
+]);
+$('#resetLayout').onclick = () => { resetLayout(); toast('ウィンドウの配置を元に戻した'); };
+$('#labResize').onclick = doLabResize;
 
 showMenu();
 requestAnimationFrame(loop);

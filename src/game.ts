@@ -466,36 +466,85 @@ export class Game {
   }
   resetPorts(uid: number) { const p = this.sim.processors.find((q) => q.uid === uid); if (!p || !p.ports) return false; delete p.ports; return true; }
 
+  /** 消しゴムの対象：物質ごと（1=消す）と、配置物の種類ごと */
+  eraseMat = new Uint8Array(256).fill(1);
+  eraseObj: Record<string, boolean> = {};
+  /** 消しゴムの選択モード（筆／矩形／投げ縄） */
+  objOk(kind: string) { return this.eraseObj[kind] !== false; }
+  setEraseFilter(mats: number[] | null, objs: Record<string, boolean>) {
+    this.eraseMat.fill(mats ? 0 : 1); if (mats) for (const m of mats) this.eraseMat[m] = 1;
+    this.eraseObj = { ...objs };
+  }
+  private removeDevice(di: number) {
+    const s = this.sim, S = this.S, [a, b] = this.devRange();
+    const d = this.devices[di];
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) s.set(d.x + i, d.y + j, M.EMPTY);
+    if (d.kind === 'proc') { const k = s.processors.findIndex((p) => (d.uid !== undefined && p.uid === d.uid) || (p.x === d.x + (S >> 1) && p.y === d.y + (S >> 1))); if (k >= 0) s.processors.splice(k, 1); }
+    this.devices.splice(di, 1); this.inv[d.kind === 'proc' ? 'proc' : d.kind]++;
+  }
+  /** 1セルを消す（ステージでは自分で描いた壁・膜・ガイドだけ。費用を返す） */
+  private eraseCell(cx: number, cy: number): boolean {
+    const s = this.sim, o = s.get(cx, cy);
+    if (o === M.EMPTY || o === M.MOVER || o === M.WALL || !this.eraseMat[o]) return false;
+    if (KIND[o] === 5 && this.devices.some((d) => { const [a, b] = this.devRange(); return cx - d.x >= a && cx - d.x <= b && cy - d.y >= a && cy - d.y <= b; })) return false; // 装置は物として消す
+    if (o === M.PWALL) { s.set(cx, cy, M.EMPTY); this.inv.ink++; return true; }
+    if (o === M.FILTER) { s.set(cx, cy, M.EMPTY); this.inv.filter++; return true; }
+    if (o === M.GUIDE) { s.set(cx, cy, M.EMPTY); this.inv.guide++; return true; }
+    if (!this.sandbox) return false;
+    if (o === M.PROCESSOR) { const k = s.processors.findIndex((p) => Math.abs(p.x - cx) <= p.size && Math.abs(p.y - cy) <= p.size); if (k >= 0) s.processors.splice(k, 1); }
+    s.set(cx, cy, M.EMPTY); return true;
+  }
   private eraseAt(x: number, y: number): boolean {
     const s = this.sim, S = this.S; let ch = false;
     // 機構
     const node = this.mech.nodeAt(x, y, 2 * S);
-    if (node && this.removeNode(node.id)) return true;
+    if (node && this.objOk(node.type) && this.removeNode(node.id)) return true;
     // ポンプ
-    const pi = s.pumps.findIndex((p) => Math.hypot(p.ax - x, p.ay - y) < 3 * S || Math.hypot(p.bx - x, p.by - y) < 3 * S);
-    if (pi >= 0) { s.pumps.splice(pi, 1); this.inv.pump++; ch = true; }
-    const [a, b] = this.devRange();
-    const di = this.devices.findIndex((d) => x - d.x >= a && x - d.x <= b && y - d.y >= a && y - d.y <= b);
-    if (di >= 0) {
-      const d = this.devices[di];
-      for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) s.set(d.x + i, d.y + j, M.EMPTY);
-      if (d.kind === 'proc') { const k = s.processors.findIndex((p) => p.x === d.x + (S >> 1) && p.y === d.y + (S >> 1)); if (k >= 0) s.processors.splice(k, 1); }
-      this.devices.splice(di, 1); this.inv[d.kind === 'proc' ? 'proc' : d.kind]++; return true;
+    if (this.objOk('pump')) {
+      const pi = s.pumps.findIndex((p) => Math.hypot(p.ax - x, p.ay - y) < 3 * S || Math.hypot(p.bx - x, p.by - y) < 3 * S);
+      if (pi >= 0) { s.pumps.splice(pi, 1); this.inv.pump++; ch = true; }
     }
+    const [a, b] = this.devRange();
+    const di = this.devices.findIndex((d) => this.objOk(d.kind) && x - d.x >= a && x - d.x <= b && y - d.y >= a && y - d.y <= b);
+    if (di >= 0) { this.removeDevice(di); return true; }
     const r = this.brush + 1;
     for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) {
       if (i * i + j * j > r * r) continue;
-      const cx = x + i, cy = y + j, o = s.get(cx, cy);
-      if (o === M.PWALL) { s.set(cx, cy, M.EMPTY); this.inv.ink++; ch = true; }
-      else if (o === M.FILTER) { s.set(cx, cy, M.EMPTY); this.inv.filter++; ch = true; }
-      else if (o === M.GUIDE) { s.set(cx, cy, M.EMPTY); this.inv.guide++; ch = true; }
-      else if (o === M.MOVER) continue;
-      else if (this.sandbox && o !== M.EMPTY && o !== M.WALL) {
-        if (o === M.PROCESSOR) { const k = s.processors.findIndex((p) => Math.abs(p.x - cx) <= p.size && Math.abs(p.y - cy) <= p.size); if (k >= 0) s.processors.splice(k, 1); }
-        s.set(cx, cy, M.EMPTY); ch = true;
-      }
+      ch = this.eraseCell(x + i, y + j) || ch;
     }
     return ch;
+  }
+  /** 範囲で消す（矩形・投げ縄）。poly は [x0,y0,x1,y1,...]（実セル） */
+  eraseRegion(poly: number[]): number {
+    if (poly.length < 6) return 0;
+    const xs = poly.filter((_, k) => k % 2 === 0), ys = poly.filter((_, k) => k % 2 === 1);
+    const x0 = Math.max(0, Math.floor(Math.min(...xs))), x1 = Math.min(this.sim.w - 1, Math.ceil(Math.max(...xs)));
+    const y0 = Math.max(0, Math.floor(Math.min(...ys))), y1 = Math.min(this.sim.h - 1, Math.ceil(Math.max(...ys)));
+    const inside = (px: number, py: number) => {
+      let c = false; const n = xs.length;
+      for (let i = 0, j = n - 1; i < n; j = i++) if ((ys[i] > py) !== (ys[j] > py) && px < ((xs[j] - xs[i]) * (py - ys[i])) / (ys[j] - ys[i]) + xs[i]) c = !c;
+      return c;
+    };
+    let count = 0;
+    // 配置物（基準点が範囲内）
+    this.mech.computePoses();
+    for (const n of [...this.mech.nodes]) {
+      if (!this.mech.byId(n.id) || !this.objOk(n.type)) continue;
+      const P = this.mech.pose(n.id)!; if (inside(P.x, P.y) && this.removeNode(n.id)) count++;
+    }
+    if (this.objOk('pump')) for (let k = this.sim.pumps.length - 1; k >= 0; k--) { const p = this.sim.pumps[k]; if (inside(p.ax + 0.5, p.ay + 0.5) || inside(p.bx + 0.5, p.by + 0.5)) { this.sim.pumps.splice(k, 1); this.inv.pump++; count++; } }
+    for (let k = this.devices.length - 1; k >= 0; k--) { const d = this.devices[k]; if (this.objOk(d.kind) && inside(d.x + 0.5, d.y + 0.5)) { this.removeDevice(k); count++; } }
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (inside(x + 0.5, y + 0.5) && this.eraseCell(x, y)) count++;
+    return count;
+  }
+  /** 付け替え：親を変える（-1 で固定点に）。関節の設定はそのまま。循環は不可 */
+  reparent(id: number, parentId: number): boolean {
+    const n = this.mech.byId(id); if (!n) return false;
+    if (!this.sandbox && this.fixedNodes.has(id)) return false;
+    if (parentId === n.parent) return false;
+    const ok = parentId < 0 ? this.mech.detach(id) : this.mech.attach(id, parentId);
+    if (ok) { this.mech.computePoses(); this.mech.rasterize(); }
+    return ok;
   }
 
   /** 線分で道具を適用 */
@@ -598,4 +647,39 @@ export function starThresholds(level: Level) {
   if (level.eco) { const g = new Game(level); level.eco(g); eco = g.cost(); }
   const r = { eco, three: Math.ceil(eco * 1.3 + 10), two: Math.ceil(eco * 2 + 40) };
   thCache.set(level.id, r); return r;
+}
+
+/**
+ * 自由実験室の大きさを変える。中身は anchor（0=左/上、0.5=中央、1=右/下）に合わせて写す。
+ * 外枠（論理2マス）は新しい大きさで作り直し、はみ出した物は捨てる。
+ */
+export function resizeLab(old: Game, level: Level, ax: number, ay: number, seed = 7): Game {
+  const g = new Game(level, true, seed, old.S);
+  const S = old.S, B = 2 * S, os = old.sim, ns = g.sim;
+  const dx = Math.round((ns.w - os.w) * ax), dy = Math.round((ns.h - os.h) * ay);
+  // 新しい内側を空にしてから、古い内側を写す
+  for (let y = B; y < ns.h - B; y++) for (let x = B; x < ns.w - B; x++) { const i = y * ns.w + x; ns.t[i] = M.EMPTY; ns.aux[i] = 0; ns.temp[i] = ns.ambient; }
+  for (let y = B; y < os.h - B; y++) for (let x = B; x < os.w - B; x++) {
+    const nx = x + dx, ny = y + dy;
+    if (nx < B || ny < B || nx >= ns.w - B || ny >= ns.h - B) continue;
+    const i = y * os.w + x, j = ny * ns.w + nx;
+    if (os.t[i] === M.MOVER) continue;
+    ns.t[j] = os.t[i]; ns.aux[j] = os.aux[i]; ns.temp[j] = os.temp[i];
+  }
+  const inn = (x: number, y: number) => x >= B && y >= B && x < ns.w - B && y < ns.h - B;
+  const [a, b] = g.devRange();
+  g.devices = old.devices.filter((d) => inn(d.x + dx + a, d.y + dy + a) && inn(d.x + dx + b, d.y + dy + b)).map((d) => ({ ...d, x: d.x + dx, y: d.y + dy }));
+  const keepUid = new Set(g.devices.map((d) => d.uid));
+  ns.processors = os.processors.filter((p) => keepUid.has(p.uid)).map((p) => ({ ...p, x: p.x + dx, y: p.y + dy, ports: p.ports?.slice() }));
+  ns.pumps = os.pumps.filter((p) => inn(p.ax + dx, p.ay + dy) && inn(p.bx + dx, p.by + dy)).map((p) => ({ ...p, ax: p.ax + dx, ay: p.ay + dy, bx: p.bx + dx, by: p.by + dy, moved: 0 }));
+  const nodes = old.mech.serialize().map((n) => (n.parent < 0 ? { ...n, ox: n.ox + dx, oy: n.oy + dy } : { ...n }));
+  g.mech.nodes = []; g.mech.load(nodes);
+  g.mech.computePoses();
+  for (const n of [...g.mech.nodes]) { if (n.parent >= 0 || !g.mech.byId(n.id)) continue; const P = g.mech.pose(n.id)!; if (!inn(P.x, P.y)) g.mech.remove(n.id); }
+  g.mech.computePoses(); g.mech.rasterize();
+  g.seq = { ...old.seq }; g.nextUid = old.nextUid;
+  g.brush = old.brush; g.filterMat = old.filterMat; g.eraseMat.set(old.eraseMat); g.eraseObj = { ...old.eraseObj };
+  ns.ambient = os.ambient;
+  ns.wakeAll();
+  return g;
 }

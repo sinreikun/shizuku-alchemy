@@ -22,7 +22,7 @@ export interface GameState {
   hover: { m: number; temp: number } | null;
 }
 export type ToWorker =
-  | { type: 'init'; levelId: string; sandbox: boolean; seed: number; brush: number }
+  | { type: 'init'; levelId: string; sandbox: boolean; seed: number; brush: number; lw?: number; lh?: number }
   | { type: 'frame'; ticks: number; viewMode: 'mat' | 'temp'; now: number; buf: ArrayBuffer; gbuf: ArrayBuffer; hover: [number, number] }
   | { type: 'op'; id: number; op: string; args: unknown[] };
 export type FromWorker =

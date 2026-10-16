@@ -305,6 +305,7 @@ export const SANDBOX: Level = {
   w: 240, h: 150, inv: {}, sources: [], goals: [], drains: [],
   build(s) {
     frame(s);
+    if (s.w < 200 || s.h < 150) return; // 小さな実験台には見本を置かない
     // 見本の配置
     rect(s, 20, 100, 2, 46); rect(s, 90, 100, 2, 46); rect(s, 20, 146, 72, 2);
     for (let j = 120; j < 146; j++) for (let i = 22; i < 90; i++) s.set(i, j, M.WATER);
@@ -315,3 +316,16 @@ export const SANDBOX: Level = {
 };
 
 export type { Game };
+
+/** 自由実験室の大きさ（論理セル）：上限は速さのため */
+export const LAB_LIMITS = { minW: 80, minH: 50, maxW: 400, maxH: 250 };
+export const LAB_PRESETS: { name: string; w: number; h: number }[] = [
+  { name: '小', w: 160, h: 100 }, { name: '標準', w: 240, h: 150 }, { name: '横長', w: 360, h: 120 },
+  { name: '縦長', w: 140, h: 220 }, { name: '大', w: 320, h: 200 }, { name: '特大', w: 400, h: 250 },
+];
+export function clampLab(w: number, h: number) {
+  const L = LAB_LIMITS;
+  return { w: Math.round(Math.max(L.minW, Math.min(L.maxW, w || 240))), h: Math.round(Math.max(L.minH, Math.min(L.maxH, h || 150))) };
+}
+/** 指定の大きさの自由実験室 */
+export function labLevel(w: number, h: number): Level { const c = clampLab(w, h); return { ...SANDBOX, w: c.w, h: c.h }; }

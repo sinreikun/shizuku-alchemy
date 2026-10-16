@@ -1,12 +1,14 @@
 // シミュレーション専用 Web Worker：Game を所有し、計算と描画（RGBA 生成）を担う。
 // 画像バッファは Transferable でメインと往復させる（SharedArrayBuffer 不要）。
-import { Game, SCALE, type Tool } from './game';
-import { LEVELS, SANDBOX } from './levels';
+import { Game, SCALE, resizeLab, type Tool } from './game';
+import { LEVELS, labLevel } from './levels';
 import { M, MATS, CH, portOffset, type PortName } from './sim';
 import { paint } from './render';
 import type { ToWorker, FromWorker, GameState, NodeView } from './protocol';
 
 let game: Game | null = null;
+let seed = 7;
+const hook = (g: Game) => { g.onAbsorb = (x, y, m) => { if (absorbs.length < 60 && Math.random() < 0.3) absorbs.push(x, y, m); }; return g; };
 let simMs = 0;
 let absorbs: number[] = [];
 let hover: [number, number] = [-1, -1];
@@ -39,12 +41,14 @@ const enc = (a: Uint8Array) => { let str = ''; for (let i = 0; i < a.length; i +
 const dec = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
 function serialize() {
   const g = game!, s = g.sim;
-  return JSON.stringify({ app: 'shizuku-alchemy', v: 4, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, seq: g.seq, nextUid: g.nextUid });
+  return JSON.stringify({ app: 'shizuku-alchemy', v: 5, lw: s.w / g.S, lh: s.h / g.S, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, seq: g.seq, nextUid: g.nextUid });
 }
 function deserialize(json: string) {
-  const g = game!, s = g.sim;
   const d = JSON.parse(json);
   if (d.app !== 'shizuku-alchemy') throw new Error('形式が違います');
+  // v5：自由実験室の大きさも保存。違う大きさなら作り直してから読む
+  if (game!.sandbox && d.lw && d.lh && (d.w !== game!.sim.w || d.h !== game!.sim.h)) { const old = game!; game = hook(new Game(labLevel(d.lw, d.lh), true, seed, SCALE)); game.brush = old.brush; }
+  const g = game!, s = g.sim;
   let t = dec(d.t), aux = dec(d.aux), temp = new Float32Array(dec(d.temp).buffer);
   let k = 1;
   if (d.w !== s.w || d.h !== s.h) {
@@ -96,6 +100,10 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   setPort: (uid: number, port: PortName, dx: number, dy: number) => game!.setPort(uid, port, dx, dy),
   resetPorts: (uid: number) => game!.resetPorts(uid),
   setAmp: (id: number, amp: number) => game!.editNode(id, { amp }),
+  resizeLab: (lw: number, lh: number, ax: number, ay: number) => { const old = game!; if (!old.sandbox) return false; game = hook(resizeLab(old, labLevel(lw, lh), ax, ay, seed)); return { w: game.sim.w, h: game.sim.h }; },
+  setEraseFilter: (mats: number[] | null, objs: Record<string, boolean>) => { game!.setEraseFilter(mats, objs); return true; },
+  eraseRegion: (poly: number[]) => game!.eraseRegion(poly),
+  reparent: (id: number, parent: number) => game!.reparent(id, parent),
   /** テスト用：勝つまで（または上限まで）一気に進める */
   run: (limit: number) => { const g = game!; g.start(); const t0 = performance.now(); while (!g.won && g.ticks < limit) g.tick(); return { won: g.won, ticks: g.ticks, ms: performance.now() - t0, cost: g.cost() }; },
   /** テスト用：同じシードの新しい盤面で解答を適用→勝つまで実行（待ち時間やフレーム数に左右されない） */
@@ -107,10 +115,10 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
 self.onmessage = (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   if (msg.type === 'init') {
-    const lv = msg.sandbox ? SANDBOX : LEVELS.find((l) => l.id === msg.levelId)!;
-    game = new Game(lv, msg.sandbox, msg.seed, SCALE);
+    const lv = msg.sandbox ? labLevel(msg.lw ?? 240, msg.lh ?? 150) : LEVELS.find((l) => l.id === msg.levelId)!;
+    seed = msg.seed;
+    game = hook(new Game(lv, msg.sandbox, msg.seed, SCALE));
     game.brush = msg.brush;
-    game.onAbsorb = (x, y, m) => { if (absorbs.length < 60 && Math.random() < 0.3) absorbs.push(x, y, m); };
     post({ type: 'ready', state: state() });
     return;
   }
