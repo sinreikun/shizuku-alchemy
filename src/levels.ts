@@ -34,7 +34,7 @@ export const LEVELS: Level[] = [
   {
     id: 'l2', chapter: 'heat', title: '湯気のエレベーター', learn: 'ヒーター・クーラー・相変化',
     story: '壺は高い棚の上。水を沸かして蒸気にし、上空で冷やして雨に戻そう。',
-    hint: 'ヒーターを水たまりの底へ。蒸気は昇るとすぐ冷えるので、斜めの屋根で棚の上空へ導き、クーラーで雨にしよう。', inv: { ink: 400, heater: 2, cooler: 2 },
+    hint: 'ヒーターを水たまりの底へ、クーラーを壺の真上へ。斜めの屋根で蒸気を棚の上空へ導くと早く、少ない資源で済む。', inv: { ink: 400, heater: 2, cooler: 2 },
     sources: [{ x: 30, y: 50, mats: [M.WATER], rate: 2, total: 1400 }],
     goals: [{ x: 112, y: 16, w: 30, h: 8, mat: M.WATER, need: 160, mode: 'absorb', label: '水' }],
     drains: [],
@@ -58,21 +58,38 @@ export const LEVELS: Level[] = [
     story: '混ざって流れてくる水と油。壺が欲しいのは油だけ。水が入ると壺が詰まる！',
     hint: '油は水に浮く。台の上に堰（せき）を作れば、上澄みの油だけがあふれる。', inv: { ink: 480 },
     sources: [{ x: 20, y: 6, mats: [M.WATER, M.OIL], rate: 3, total: 2400 }],
-    goals: [{ x: 128, y: 84, w: 22, h: 10, mat: M.OIL, need: 200, mode: 'absorb', label: '油' }],
+    goals: [{ x: 132, y: 92, w: 12, h: 2, mat: M.OIL, need: 200, mode: 'absorb', label: '油' }],
     drains: [{ x: 70, y: 96, w: 40, h: 2 }],
-    build(s) { frame(s); rect(s, 2, 60, 66, 38); rect(s, 70, 94, 40, 4, M.EMPTY); rect(s, 110, 70, 4, 28); cup(s, 128, 84, 22, 10); },
-    solve(g) { g.stroke('wall', 40, 36, 40, 59); g.stroke('wall', 42, 38, 124, 80); },
+    build(s) { frame(s); rect(s, 2, 60, 66, 38); rect(s, 70, 94, 40, 4, M.EMPTY); rect(s, 110, 70, 4, 28); cup(s, 132, 88, 12, 6); },
+    solve(g) { g.stroke('wall', 40, 36, 40, 59); g.stroke('wall', 42, 38, 133, 84); },
+    naive: [{ desc: '湧き口から壺へ直接坂を引く', run: (g) => g.stroke('wall', 14, 14, 133, 84) }],
     limit: 9000,
   },
   {
-    id: 'l5', chapter: 'dens', title: '水銀の重み', learn: '重い液体は下をくぐる',
-    story: '重たい水銀を壺へ運べ。途中に油の湖があるが、水銀は何よりも重い。',
-    hint: '水銀を湖に落とせば、油を押しのけて沈む。あふれた先を壺へ導こう。', inv: { ink: 360 },
-    sources: [{ x: 14, y: 6, mats: [M.MERCURY], rate: 2, total: 1200 }],
-    goals: [{ x: 132, y: 84, w: 20, h: 10, mat: M.MERCURY, need: 200, mode: 'absorb', label: '水銀' }],
-    drains: [{ x: 2, y: 96, w: 40, h: 2 }],
-    build(s) { frame(s); rect(s, 2, 94, 40, 4, M.EMPTY); rect(s, 42, 50, 2, 48); rect(s, 44, 80, 38, 18); rect(s, 80, 64, 2, 16); rect(s, 44, 68, 36, 12, M.OIL); cup(s, 132, 84, 20, 10); },
-    solve(g) { g.stroke('wall', 6, 18, 46, 46); g.stroke('wall', 82, 70, 129, 82); },
+    id: 'l5', chapter: 'dens', title: '水銀の重み', learn: '重い液体は沈んで潜り込む',
+    story: '壺は水底の密室にあり、天井でふさがれている。入口は右の水槽の底、仕切りの下だけ。水より重い水銀なら潜って届くはず。',
+    hint: '天井に落ちた水銀は左の奈落へこぼれる。仕切りを越えて右の水槽まで運ぼう。水銀は水を押しのけて沈み、斜めの底を滑って仕切りの下をくぐる。',
+    inv: { ink: 220 },
+    sources: [{ x: 16, y: 6, mats: [M.MERCURY], rate: 2, total: 1600 }],
+    goals: [{ x: 22, y: 84, w: 26, h: 8, mat: M.MERCURY, need: 160, mode: 'absorb', label: '水銀' }],
+    drains: [{ x: 2, y: 96, w: 6, h: 2 }, { x: 120, y: 96, w: 38, h: 2 }],
+    build(s) {
+      frame(s);
+      rect(s, 2, 94, 6, 4, M.EMPTY); rect(s, 120, 94, 38, 4, M.EMPTY);
+      // 密室（左）：外壁・天井。右は仕切りで、下だけ開いている
+      rect(s, 8, 44, 2, 54); for (let x = 10; x < 61; x++) rect(s, x, 38 + Math.round(((60 - x) * 6) / 50), 1, 2); rect(s, 61, 16, 4, 62);
+      // 開いた水槽（右）の外壁
+      rect(s, 118, 40, 2, 58);
+      // 底：右から左へ下る斜面
+      for (let x = 10; x < 118; x++) { const top = x > 64 ? Math.round(70 + ((117 - x) * 22) / 53) : 92; rect(s, x, top, 1, 98 - top); }
+      cup(s, 22, 84, 26, 8);
+      fill(s, 10, 46, 51, 52, () => M.WATER); fill(s, 65, 44, 53, 54, () => M.WATER);
+    },
+    solve(g) { g.stroke('wall', 12, 9, 100, 20); },
+    naive: [
+      { desc: '壺の真上（密室の天井）へ坂を引く', run: (g) => g.stroke('wall', 12, 9, 36, 32) },
+      { desc: '湧き口の下に何も描かない（天井に直接落とす）', run: () => {} },
+    ],
     limit: 9000,
   },
   {
@@ -128,6 +145,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 100, y: 96, w: 56, h: 2 }],
     build(s) { frame(s); rect(s, 100, 94, 56, 4, M.EMPTY); cup(s, 64, 88, 14, 6); },
     solve(g) { g.stroke('filter', 63, 40, 79, 50); g.stroke('wall', 81, 51, 106, 66); },
+    naive: [{ desc: '膜を使わず、壁の漏斗で壺へ流す', run: (g) => { g.stroke('wall', 50, 40, 64, 80); g.stroke('wall', 92, 40, 80, 80); } }],
     limit: 9000,
   },
   {

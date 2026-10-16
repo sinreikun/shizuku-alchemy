@@ -2,6 +2,7 @@ import './style.css';
 import { M, MATS } from './sim';
 import { Game, Tool, Level, DEVICE_MAT } from './game';
 import { LEVELS, SANDBOX, CHAPTERS } from './levels';
+import { loadBrush, saveBrush, clampBrush, brushLabel } from './prefs';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const SAVE = 'shizuku-alchemy-v2';
@@ -122,6 +123,7 @@ function startLevel(l: Level) {
   $('#goalsBox').style.display = sandbox ? 'none' : '';
   $('#invBox').style.display = sandbox ? 'none' : '';
   $('#step').style.display = '';
+  setBrush(loadBrush());
   resize(); fit();
   buildPalette(); hud();
 }
@@ -214,7 +216,8 @@ function hud() {
     const pct = base === Infinity ? 100 : (g.inv[k] / base) * 100;
     inv.insertAdjacentHTML('beforeend', `<div class="it"><span class="sw" style="--sw:${k === 'pump' ? '#9dffb8' : css(m)}"></span><span>${n}</span><b>${fmt(g.inv[k])}</b><div class="bar thin"><i style="width:${pct}%"></i></div></div>`);
   }
-  $('#brushv').textContent = `太さ ${g.brush + 1}`;
+  $('#brushv').textContent = brushLabel(g.brush);
+  const bs = $('#brush') as HTMLInputElement; if (bs.value !== String(g.brush)) bs.value = String(g.brush);
 }
 
 // ---------- カメラ ----------
@@ -298,7 +301,7 @@ canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', () => { hover = [-1, -1]; $('#inspect').classList.remove('show'); });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (e.shiftKey) { game.brush = Math.max(0, Math.min(8, game.brush + (e.deltaY > 0 ? -1 : 1))); ($('#brush') as HTMLInputElement).value = String(game.brush); hud(); return; }
+  if (e.shiftKey) { setBrush(game.brush + (e.deltaY > 0 ? -1 : 1)); return; }
   const r = canvas.getBoundingClientRect();
   zoomAt(Math.exp(-e.deltaY * 0.0015), (e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
 }, { passive: false });
@@ -329,7 +332,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') { retry(); return; }
   if (e.key === 'f' || e.key === 'F') { fit(); return; }
   if (e.key === '.') { stepOnce(); return; }
-  if (e.key === '[' || e.key === ']') { game.brush = Math.max(0, Math.min(8, game.brush + (e.key === ']' ? 1 : -1))); ($('#brush') as HTMLInputElement).value = String(game.brush); hud(); return; }
+  if (e.key === '[' || e.key === ']') { setBrush(game.brush + (e.key === ']' ? 1 : -1)); return; }
   const b = [...document.querySelectorAll<HTMLButtonElement>('.tool')].find((x) => x.querySelector('kbd')?.textContent === e.key);
   b?.click();
 });
@@ -362,7 +365,14 @@ $('#zout').onclick = () => zoomAt(0.8, canvas.width / 2, canvas.height / 2);
 $('#zfit').onclick = fit;
 $('#next').onclick = () => { const k = LEVELS.indexOf(level); startLevel(LEVELS[k + 1] ?? SANDBOX); };
 $('#again').onclick = () => startLevel(level);
-($('#brush') as HTMLInputElement).oninput = (e) => { game.brush = Number((e.target as HTMLInputElement).value); hud(); };
+function setBrush(v: number) {
+  const b = clampBrush(v);
+  if (game) game.brush = b;
+  ($('#brush') as HTMLInputElement).value = String(b);
+  $('#brushv').textContent = brushLabel(b);
+  saveBrush(b);
+}
+($('#brush') as HTMLInputElement).oninput = (e) => { setBrush(Number((e.target as HTMLInputElement).value)); hud(); };
 document.querySelectorAll<HTMLButtonElement>('#viewmode button').forEach((b) => b.onclick = () => {
   const v = b.dataset.v!;
   if (v === 'glow') { glow = !glow; b.classList.toggle('on', !glow); return; }

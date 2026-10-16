@@ -19,5 +19,15 @@ describe('ステージ検証', () => {
       while (!g.won && g.ticks < limit) g.tick();
       expect(g.won).toBe(false);
     }, 60000);
+    for (const nv of lv.naive ?? []) {
+      it(`${lv.title}: 近道「${nv.desc}」ではクリアできない`, () => {
+        const g = new Game(lv);
+        nv.run(g);
+        g.start();
+        const limit = lv.limit ?? 6000;
+        while (!g.won && g.ticks < limit) g.tick();
+        expect(g.won, `progress=${g.progress}`).toBe(false);
+      }, 60000);
+    }
   }
 });

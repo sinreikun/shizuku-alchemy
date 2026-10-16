@@ -155,6 +155,8 @@ export class Sim {
           const o = t[j];
           if (o === M.EMPTY || (def.kind === 'liquid' && MATS[o].kind === 'gas')) best = j;
           else if (def.kind === 'gas' && MATS[o].kind === 'gas' && MATS[o].dens > def.dens + 1) { best = j; break; }
+          // 重い液体は軽い液体の下へ横からも潜り込む
+          else if (def.kind === 'liquid' && MATS[o].kind === 'liquid' && MATS[o].dens < def.dens && (ny < 0 || ny >= h || t[i + dy * w] !== M.EMPTY) && this.rnd() < 0.5) { best = j; break; }
           else { if (d === 1 && o === M.FILTER) this.tunnel(i, dir, m); break; }
           const below = ny >= 0 && ny < h ? t[j + dy * w] : M.WALL;
           if (below === M.EMPTY) break;

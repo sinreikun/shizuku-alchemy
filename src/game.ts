@@ -19,6 +19,8 @@ export interface Level {
   build: (s: Sim) => void;
   /** 自動検証用の解答手順（放水前に配置する） */
   solve?: (g: Game) => void;
+  /** 素朴な近道（これではクリアできないことをテストする） */
+  naive?: { desc: string; run: (g: Game) => void }[];
   /** 解答の最大ティック数 */
   limit?: number;
 }
