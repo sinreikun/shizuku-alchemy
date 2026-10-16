@@ -19,6 +19,9 @@ interface ToolDef { tool: Tool; name: string; desc: string; color: string; cat: 
 const css = (m: number) => `rgb(${MATS[m].color.join(',')})`;
 const matTool = (m: number, learnAt: string): ToolDef => ({ tool: `mat:${m}`, name: MATS[m].name, desc: MATS[m].desc, color: css(m), cat: MATS[m].kind === 'static' ? '固体' : MATS[m].cat, learnAt });
 const PROC_LEARN: Record<ProcessMode, string> = { electrolysis: 'l11', combustion: 'l12', condensation: 'l12', crystallization: 'p1', regeneration: 'p3', extraction: 'p2', recovery: 'p2' };
+/** ステージごとの固定シード：同じ操作なら毎回同じ結果になる（再現性） */
+const levelSeed = (id: string) => { let h = 2166136261; for (const c of id) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return (h >>> 0) || 1; };
+
 const TOOLS: ToolDef[] = [
   { tool: 'wall', name: '壁', desc: '流体を止める壁を描く。', color: css(M.PWALL), cat: '基本', learnAt: 'l1', inv: 'ink' },
   { tool: 'erase', name: '消しゴム', desc: '置いたものを消す（右ドラッグでも可）。機構も消せる。', color: '#333a55', cat: '基本', learnAt: 'l1' },
@@ -157,7 +160,7 @@ async function startLevel(l: Level) {
   octx.fillStyle = '#0c0f1a'; octx.fillRect(0, 0, w, h); gctx.clearRect(0, 0, w, h);
   brush = loadBrush();
   st = null;
-  await new Promise<void>((res) => { readyRes = res; send({ type: 'init', levelId: l.id, sandbox, seed: (Math.random() * 1e9) | 0, brush }); });
+  await new Promise<void>((res) => { readyRes = res; send({ type: 'init', levelId: l.id, sandbox, seed: levelSeed(l.id), brush }); });
   filterMat = l.filterMat ?? M.WATER;
   tool = sandbox ? 'mat:3' : 'wall';
   if (!sandbox && !l.inv.ink) tool = (availableTools()[1]?.tool ?? 'erase');

@@ -178,7 +178,7 @@ export const LEVELS: Level[] = [
     story: '地下の水を、高い棚の壺へ。ヒーターはない。電解・燃焼・凝縮を組み合わせた循環装置で運び上げよう。',
     hint: '電解槽で水素と酸素を作り、泡が出る水面の上で着火すると蒸気になる。クーラーで壺の上に雨を降らせよう。', inv: { electro: 1, igniter: 1, cooler: 2, ink: 200 },
     sources: [],
-    goals: [{ x: 118, y: 38, w: 30, h: 10, mat: M.WATER, need: 100, mode: 'absorb', label: '水' }],
+    goals: [{ x: 118, y: 38, w: 30, h: 10, mat: M.WATER, need: 70, mode: 'absorb', label: '水' }],
     drains: [],
     build(s) { frame(s); rect(s, 100, 50, 58, 48); fill(s, 2, 76, 98, 22, () => M.WATER); cup(s, 118, 38, 30, 10); },
     solve(g) { g.lapply('electro', 50, 92); g.lapply('igniter', 50, 30); g.lapply('cooler', 126, 26); g.lapply('cooler', 140, 26); },

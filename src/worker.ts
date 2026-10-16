@@ -87,6 +87,8 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   deserialize: (json: string) => { deserialize(json); return true; },
   /** テスト用：勝つまで（または上限まで）一気に進める */
   run: (limit: number) => { const g = game!; g.start(); const t0 = performance.now(); while (!g.won && g.ticks < limit) g.tick(); return { won: g.won, ticks: g.ticks, ms: performance.now() - t0, cost: g.cost() }; },
+  /** テスト用：同じシードの新しい盤面で解答を適用→勝つまで実行（待ち時間やフレーム数に左右されない） */
+  trial: (which: 'solve' | 'eco', limit: number, seed: number) => { const lv = game!.level; const g = new Game(lv, false, seed, SCALE); lv[which]?.(g); g.start(); const t0 = performance.now(); while (!g.won && g.ticks < limit) g.tick(); return { won: g.won, ticks: g.ticks, ms: performance.now() - t0, cost: g.cost() }; },
   /** テスト用：ステージの解答・節約解を適用 */
   script: (which: 'solve' | 'eco') => { const lv = game!.level; lv[which]?.(game!); return true; },
 };
