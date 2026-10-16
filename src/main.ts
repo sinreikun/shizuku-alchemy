@@ -1,42 +1,87 @@
 import './style.css';
-import { M, MATS } from './sim';
-import { Game, Tool, Level, DEVICE_MAT, starThresholds } from './game';
+import { M, MATS, PROCESSES, PROCESS_MODES, type ProcessMode } from './sim';
+import { type Tool, type Level, type Inventory, DEVICE_MAT, isDeviceTool, starThresholds, SCALE } from './game';
 import { LEVELS, SANDBOX, CHAPTERS } from './levels';
+import { NODE_NAMES, JOINT_NAMES, type JointType } from './mech';
 import { loadBrush, saveBrush, clampBrush, brushLabel } from './prefs';
+import type { GameState, FromWorker, ToWorker, NodeView } from './protocol';
+import SimWorker from './worker?worker';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const SAVE = 'shizuku-alchemy-v2';
+const LAB_SAVE = 'shizuku-alchemy-lab-v3';
 interface Progress { stars: Record<string, number>; learned: string[]; last: string }
 const prog: Progress = { stars: {}, learned: [], last: 'l1', ...JSON.parse(localStorage.getItem(SAVE) || '{}') };
 const saveProg = () => localStorage.setItem(SAVE, JSON.stringify(prog));
 
 // ---------- ツール定義 ----------
-interface ToolDef { tool: Tool; name: string; desc: string; color: string; cat: string; learnAt?: string; key?: string }
+interface ToolDef { tool: Tool; name: string; desc: string; color: string; cat: string; learnAt?: string; key?: string; inv?: keyof Inventory }
 const css = (m: number) => `rgb(${MATS[m].color.join(',')})`;
-const matTool = (m: number, learnAt: string): ToolDef => ({ tool: `mat:${m}`, name: MATS[m].name, desc: MATS[m].desc, color: css(m), cat: MATS[m].cat, learnAt });
+const matTool = (m: number, learnAt: string): ToolDef => ({ tool: `mat:${m}`, name: MATS[m].name, desc: MATS[m].desc, color: css(m), cat: MATS[m].kind === 'static' ? '固体' : MATS[m].cat, learnAt });
+const PROC_LEARN: Record<ProcessMode, string> = { electrolysis: 'l11', combustion: 'l12', condensation: 'l12', crystallization: 'p1', regeneration: 'p3', extraction: 'p2', recovery: 'p2' };
 const TOOLS: ToolDef[] = [
-  { tool: 'wall', name: '壁', desc: '流体を止める壁を描く。', color: css(M.PWALL), cat: '基本', learnAt: 'l1' },
-  { tool: 'erase', name: '消しゴム', desc: '置いたものを消す（右ドラッグでも可）。', color: '#333a55', cat: '基本', learnAt: 'l1' },
-  { tool: 'heater', name: 'ヒーター', desc: MATS[M.HEATER].desc, color: css(M.HEATER), cat: '装置', learnAt: 'l2' },
-  { tool: 'cooler', name: 'クーラー', desc: MATS[M.COOLER].desc, color: css(M.COOLER), cat: '装置', learnAt: 'l2' },
-  { tool: 'igniter', name: '着火器', desc: MATS[M.IGNITER].desc, color: css(M.IGNITER), cat: '装置', learnAt: 'l8' },
-  { tool: 'pump', name: 'ポンプ', desc: '2回クリックで吸込口→吐出口。壁を越えて流体を運ぶ配管。', color: '#9dffb8', cat: '装置', learnAt: 'l9' },
-  { tool: 'filter', name: '選択膜', desc: '指定した物質だけを通す膜。下の欄で通す物質を選ぶ。', color: css(M.FILTER), cat: '装置', learnAt: 'l10' },
-  { tool: 'electro', name: '電解槽', desc: MATS[M.ELECTRO].desc, color: css(M.ELECTRO), cat: '装置', learnAt: 'l11' },
+  { tool: 'wall', name: '壁', desc: '流体を止める壁を描く。', color: css(M.PWALL), cat: '基本', learnAt: 'l1', inv: 'ink' },
+  { tool: 'erase', name: '消しゴム', desc: '置いたものを消す（右ドラッグでも可）。機構も消せる。', color: '#333a55', cat: '基本', learnAt: 'l1' },
+  { tool: 'heater', name: 'ヒーター', desc: MATS[M.HEATER].desc, color: css(M.HEATER), cat: '装置', learnAt: 'l2', inv: 'heater' },
+  { tool: 'cooler', name: 'クーラー', desc: MATS[M.COOLER].desc, color: css(M.COOLER), cat: '装置', learnAt: 'l2', inv: 'cooler' },
+  { tool: 'igniter', name: '着火器', desc: MATS[M.IGNITER].desc, color: css(M.IGNITER), cat: '装置', learnAt: 'l8', inv: 'igniter' },
+  { tool: 'pump', name: 'ポンプ', desc: '2回クリックで吸込口→吐出口。壁を越えて流体を運ぶ配管。', color: '#9dffb8', cat: '装置', learnAt: 'l9', inv: 'pump' },
+  { tool: 'filter', name: '選択膜', desc: '指定した物質だけを通す膜。下の欄で通す物質を選ぶ。', color: css(M.FILTER), cat: '装置', learnAt: 'l10', inv: 'filter' },
+  { tool: 'electro', name: '簡易電解板', desc: MATS[M.ELECTRO].desc + '（触れた水をその場で分解）', color: css(M.ELECTRO), cat: '装置', learnAt: 'l11', inv: 'electro' },
+  ...PROCESS_MODES.map((m): ToolDef => ({ tool: `proc:${m}`, name: PROCESSES[m].name, desc: PROCESSES[m].desc + '（左=主入口・右=主出口・下=補助）', color: css(M.PROCESSOR), cat: '循環装置', learnAt: PROC_LEARN[m], inv: 'proc' })),
+  { tool: 'piston', name: 'ピストン', desc: '根元からドラッグした向き・長さに伸び縮みするモーター。先端に置いたものが一緒に動く。', color: '#ffd27a', cat: '機構', learnAt: 'm1', inv: 'piston' },
+  { tool: 'plate', name: '可動板', desc: 'ドラッグで描く動く壁。始点をモーターの上にすると親子付けされる。流体を押しのける。', color: css(M.MOVER), cat: '機構', learnAt: 'm1', inv: 'plate' },
+  { tool: 'rotor', name: '回転モーター', desc: 'クリックで置く回転軸。上に描いた板が回る。ピストンの先端にも置ける。', color: '#7fd3ff', cat: '機構', learnAt: 'm2', inv: 'rotor' },
+  { tool: 'disc', name: '可動円盤', desc: '丸い可動壁。モーターの上に置くと一緒に動く。', color: css(M.MOVER), cat: '機構', learnAt: 'm2', inv: 'plate' },
+  { tool: 'select', name: '選択・調整', desc: '機構をクリックして、回転の向き・速さ・関節（固定／自由／ばね）などを調整する。', color: '#ffffff', cat: '機構', learnAt: 'm2' },
+  { tool: 'guide', name: 'ガイド', desc: MATS[M.GUIDE].desc, color: css(M.GUIDE), cat: '機構', learnAt: 'm4', inv: 'guide' },
   matTool(M.WATER, 'l1'), matTool(M.OIL, 'l4'), matTool(M.MERCURY, 'l5'), matTool(M.LAVA, 'l3'), matTool(M.BRINE, 'l6'),
-  matTool(M.STEAM, 'l2'), matTool(M.HYDROGEN, 'l11'), matTool(M.OXYGEN, 'l8'), matTool(M.NITROGEN, 'l8'), matTool(M.CO2, 'l8'), matTool(M.SMOKE, 'l8'), matTool(M.HGVAPOR, 'l5'), matTool(M.FIRE, 'l8'),
+  matTool(M.SOLVENT, 'p2'), matTool(M.EXTRACT, 'p2'), matTool(M.LOADED, 'p2'),
+  matTool(M.STEAM, 'l2'), matTool(M.HYDROGEN, 'l11'), matTool(M.OXYGEN, 'l8'), matTool(M.NITROGEN, 'l8'), matTool(M.CO2, 'l8'), matTool(M.SMOKE, 'l8'), matTool(M.HGVAPOR, 'l5'), matTool(M.FIRE, 'l8'), matTool(M.SOLVAPOR, 'p2'),
   { tool: 'air', name: '空気', desc: '酸素23%・窒素77%の有限量の混合気体を置く。', color: '#5d6fa8', cat: '気体', learnAt: 'l8' },
-  matTool(M.SALT, 'l6'), matTool(M.SAND, 'l3'), matTool(M.ROCK, 'l3'), matTool(M.SOOT, 'l8'),
+  matTool(M.SALT, 'l6'), matTool(M.SAND, 'l3'), matTool(M.ROCK, 'l3'), matTool(M.SOOT, 'l8'), matTool(M.ACTIVATOR, 'p1'), matTool(M.COMPOSITE, 'p1'),
   matTool(M.ICE, 'l2'), matTool(M.GLASS, 'l3'),
 ];
-const CATS = ['基本', '液体', '気体', '粉体', '固体', '装置'];
+const CATS = ['基本', '機構', '装置', '循環装置', '液体', '気体', '粉体', '固体'];
+
+// ---------- Worker（シミュレーション） ----------
+const worker: Worker = new SimWorker();
+let st: GameState | null = null;
+let level: Level;
+let sandbox = false;
+let opId = 1;
+const pending = new Map<number, (r: unknown) => void>();
+const send = (m: ToWorker, tr: Transferable[] = []) => worker.postMessage(m, tr);
+function op<T = unknown>(name: string, ...args: unknown[]): Promise<T> {
+  const id = opId++;
+  return new Promise((res) => { pending.set(id, res as (r: unknown) => void); send({ type: 'op', id, op: name, args }); });
+}
+let frameBusy = false, readyRes: (() => void) | null = null;
+worker.onmessage = (e: MessageEvent<FromWorker>) => {
+  const m = e.data;
+  if (m.type === 'ready') { st = m.state; frameBusy = false; buf = null; readyRes?.(); readyRes = null; hud(); return; }
+  if (m.type === 'opResult') { st = m.state; if (m.error) toast(m.error); pending.get(m.id)?.(m.result); pending.delete(m.id); hudSoon(); return; }
+  if (m.type === 'frame') {
+    frameBusy = false;
+    if (!st || m.state.w !== st.w || m.state.h !== st.h) { st = m.state; return; }
+    st = m.state;
+    buf = m.buf; gbuf = m.gbuf;
+    img.data.set(new Uint8ClampedArray(buf)); octx.putImageData(img, 0, 0);
+    if (glow) { gimg.data.set(new Uint8ClampedArray(gbuf)); gctx.putImageData(gimg, 0, 0); }
+    for (let k = 0; k < m.absorbs.length; k += 3) addP({ x: m.absorbs[k] + 0.5, y: m.absorbs[k + 1] + 0.5, vx: (Math.random() - 0.5) * 1.2, vy: -Math.random() * 1.6 - 0.6, c: css(m.absorbs[k + 2]), life: 45, max: 45, size: 1.6, g: 0.06 });
+    if (m.absorbs.length && Math.random() < 0.3) blip(700 + Math.random() * 500, 0.04);
+    for (let k = 0; k < m.sparks.length; k += 3) addP({ x: m.sparks[k] + 0.5, y: m.sparks[k + 1], vx: (Math.random() - 0.5) * 0.3, vy: -Math.random() * 0.5 - 0.1, c: m.sparks[k + 2] === M.FIRE ? '#ffd27a' : '#ff8a3a', life: 50, max: 50, size: 0.7, g: -0.004 });
+    if (m.wonNow) onWin();
+  }
+};
 
 // ---------- 状態 ----------
-let game: Game;
-let level: Level;
 let tool: Tool = 'wall';
 let speed = 1, paused = false, viewMode: 'mat' | 'temp' = 'mat', glow = true;
 let briefOpen = true;
+let selected = 0;
+let brush = loadBrush();
+let filterMat: number = M.WATER;
 
 const canvas = $<HTMLCanvasElement>('#view');
 const ctx = canvas.getContext('2d')!;
@@ -44,7 +89,8 @@ const off = document.createElement('canvas');
 const octx = off.getContext('2d')!;
 const glowC = document.createElement('canvas');
 const gctx = glowC.getContext('2d')!;
-let img: ImageData, px: Uint32Array, gimg: ImageData, gpx: Uint32Array;
+let img: ImageData, gimg: ImageData;
+let buf: ArrayBuffer | null = null, gbuf: ArrayBuffer | null = null;
 
 const cam = { s: 6, x: 0, y: 0 };
 let dpr = 1;
@@ -64,7 +110,7 @@ function blip(freq: number, dur = 0.06, type: OscillatorType = 'sine', vol = 0.0
 // ---------- 粒子 ----------
 interface P { x: number; y: number; vx: number; vy: number; life: number; max: number; c: string; size: number; g: number }
 let parts: P[] = [];
-const addP = (p: Partial<P> & { x: number; y: number }) => parts.length < 900 && parts.push({ vx: 0, vy: 0, life: 40, max: 40, c: '#fff', size: 0.6, g: 0.02, ...p });
+const addP = (p: Partial<P> & { x: number; y: number }) => parts.length < 900 && parts.push({ vx: 0, vy: 0, life: 40, max: 40, c: '#fff', size: 1.2, g: 0.04, ...p });
 
 // ---------- 画面切替 ----------
 function showMenu() {
@@ -82,35 +128,41 @@ function renderMenu() {
   CHAPTERS.forEach((ch) => {
     const lv = LEVELS.filter((l) => l.chapter === ch.id);
     const el = document.createElement('div'); el.className = 'chapter'; el.style.setProperty('--c', ch.color);
-    el.innerHTML = `<h3>${ch.name}</h3>`;
+    el.innerHTML = `<h3>${ch.name}${['mech', 'proc'].includes(ch.id) ? ' <span class="new">NEW</span>' : ''}</h3>`;
     const row = document.createElement('div'); row.className = 'cards';
     lv.forEach((l) => {
-      const n = LEVELS.indexOf(l) + 1, st = prog.stars[l.id] || 0;
-      const b = document.createElement('button'); b.className = 'card-lv' + (st ? ' done' : '');
-      b.innerHTML = `<span class="num">${n}</span><span class="nm">${l.title}</span><span class="lrn">📘 ${l.learn}</span><span class="st">${'★'.repeat(st)}${'☆'.repeat(3 - st)}</span>`;
+      const n = LEVELS.indexOf(l) + 1, s = prog.stars[l.id] || 0;
+      const b = document.createElement('button'); b.className = 'card-lv' + (s ? ' done' : '');
+      b.innerHTML = `<span class="num">${n}</span><span class="nm">${l.title}</span><span class="lrn">📘 ${l.learn}</span><span class="st">${'★'.repeat(s)}${'☆'.repeat(3 - s)}</span>`;
       b.onclick = () => startLevel(l);
       row.appendChild(b);
     });
     el.appendChild(row); box.appendChild(el);
   });
   const lab = document.createElement('div'); lab.className = 'chapter lab'; lab.style.setProperty('--c', '#ff7ad9');
-  lab.innerHTML = `<h3>自由実験室</h3><button class="card-lv wide"><span class="num">🧪</span><span class="nm">すべての物質・装置で自由に実験</span><span class="lrn">27種類の物質、7種類の装置、ポンプ配管、保存と書き出し</span></button>`;
+  const nMat = TOOLS.filter((t) => t.tool.startsWith('mat:') || t.tool === 'air').length;
+  lab.innerHTML = `<h3>自由実験室</h3><button class="card-lv wide"><span class="num">🧪</span><span class="nm">すべての物質・装置・機構で自由に実験</span><span class="lrn">${nMat}種類の物質、7方式の循環装置、モーター・ピストン・関節、ポンプ配管、保存と書き出し</span></button>`;
   lab.querySelector('button')!.addEventListener('click', () => startLevel(SANDBOX));
   box.appendChild(lab);
 }
 
-function startLevel(l: Level) {
+async function startLevel(l: Level) {
   level = l;
-  const sandbox = l === SANDBOX;
-  game = new Game(l, sandbox, (Math.random() * 1e9) | 0);
-  game.onAbsorb = (x, y, m) => { if (Math.random() < 0.35) addP({ x: x + 0.5, y: y + 0.5, vx: (Math.random() - 0.5) * 0.6, vy: -Math.random() * 0.8 - 0.3, c: css(m), life: 45, max: 45, size: 0.8, g: 0.03 }); if (Math.random() < 0.05) blip(700 + Math.random() * 500, 0.04); };
+  sandbox = l === SANDBOX;
   if (!sandbox) prog.last = l.id;
   saveProg();
-  off.width = glowC.width = game.sim.w; off.height = glowC.height = game.sim.h;
-  img = octx.createImageData(game.sim.w, game.sim.h); px = new Uint32Array(img.data.buffer);
-  gimg = gctx.createImageData(game.sim.w, game.sim.h); gpx = new Uint32Array(gimg.data.buffer);
+  const w = (l.w ?? 160) * SCALE, h = (l.h ?? 100) * SCALE;
+  off.width = glowC.width = w; off.height = glowC.height = h;
+  img = octx.createImageData(w, h); gimg = gctx.createImageData(w, h);
+  octx.fillStyle = '#0c0f1a'; octx.fillRect(0, 0, w, h); gctx.clearRect(0, 0, w, h);
+  brush = loadBrush();
+  st = null;
+  await new Promise<void>((res) => { readyRes = res; send({ type: 'init', levelId: l.id, sandbox, seed: (Math.random() * 1e9) | 0, brush }); });
+  filterMat = l.filterMat ?? M.WATER;
   tool = sandbox ? 'mat:3' : 'wall';
-  paused = false; parts = [];
+  if (!sandbox && !l.inv.ink) tool = (availableTools()[1]?.tool ?? 'erase');
+  if (!sandbox && l.procModes?.length) tool = `proc:${l.procModes[0]}`;
+  paused = false; parts = []; selected = 0;
   $('#menu').classList.add('hidden'); $('#play').classList.remove('hidden');
   $('#win').classList.add('hidden');
   const ch = CHAPTERS.find((c) => c.id === l.chapter);
@@ -123,28 +175,29 @@ function startLevel(l: Level) {
   $('#goalsBox').style.display = sandbox ? 'none' : '';
   $('#invBox').style.display = sandbox ? 'none' : '';
   $('#scoreBox').style.display = sandbox ? 'none' : '';
-  $('#step').style.display = '';
-  setBrush(loadBrush());
+  setBrush(brush);
   resize(); fit();
   buildPalette(); hud();
 }
 
 // ---------- パレット ----------
 function availableTools(): ToolDef[] {
-  if (level === SANDBOX) return TOOLS;
+  if (sandbox) return TOOLS;
   const inv = level.inv;
   const list: ToolDef[] = [];
-  const pick = (t: Tool) => TOOLS.find((d) => d.tool === t)!;
-  if (inv.ink) list.push(pick('wall'));
-  list.push(pick('erase'));
-  for (const k of ['heater', 'cooler', 'igniter', 'electro', 'pump', 'filter'] as const) if (inv[k]) list.push(pick(k));
+  for (const t of TOOLS) {
+    if (t.tool.startsWith('mat:') || t.tool === 'air') continue;
+    if (t.tool === 'erase') { list.push(t); continue; }
+    if (t.tool === 'select') { if (inv.rotor || inv.piston || level.mech) list.push(t); continue; }
+    if (t.tool.startsWith('proc:')) { if (inv.proc && level.procModes?.includes(t.tool.slice(5) as ProcessMode)) list.push(t); continue; }
+    if (t.inv && inv[t.inv]) list.push(t);
+  }
   return list;
 }
 function buildPalette() {
   const box = $('#palette'); box.innerHTML = '';
   const tools = availableTools();
   let key = 1;
-  const sandbox = level === SANDBOX;
   const learned = new Set(prog.learned);
   for (const cat of CATS) {
     const ts = tools.filter((t) => t.cat === cat);
@@ -159,28 +212,56 @@ function buildPalette() {
       const isNew = sandbox && t.learnAt && !learned.has(t.learnAt);
       b.innerHTML = `<span class="sw" style="--sw:${t.color}"></span><span class="tn">${t.name}</span>${k ? `<kbd>${k}</kbd>` : ''}${isNew ? '<i class="lock" title="チュートリアル未修了">🔰</i>' : ''}`;
       b.dataset.tool = t.tool;
-      b.onclick = () => { tool = t.tool; game.pendingPump = null; buildPalette(); blip(660, 0.03); };
-      b.onmouseenter = (e) => showTip(e.currentTarget as HTMLElement, `<b>${t.name}</b><br>${t.desc}${isNew ? `<br><span class="muted">🔰 ステージ「${LEVELS.find((l) => l.id === t.learnAt)?.title}」で学べます</span>` : ''}`);
+      b.onclick = () => { tool = t.tool; if (st?.pendingPump) op('cancelPump'); buildPalette(); blip(660, 0.03); };
+      const learnLv = LEVELS.find((l) => l.id === t.learnAt);
+      b.onmouseenter = (e) => showTip(e.currentTarget as HTMLElement, `<b>${t.name}</b><br>${t.desc}${isNew && learnLv ? `<br><span class="muted">🔰 ステージ${LEVELS.indexOf(learnLv) + 1}「${learnLv.title}」で学べます</span>` : ''}`);
       b.onmouseleave = hideTip;
       grid.appendChild(b);
     }
     box.appendChild(grid);
   }
   if (tool === 'filter' || (sandbox && tools.some((t) => t.tool === 'filter'))) {
-    const opts = [M.WATER, M.OIL, M.MERCURY, M.BRINE, M.HYDROGEN, M.OXYGEN, M.STEAM, M.CO2];
+    const opts = [M.WATER, M.OIL, M.MERCURY, M.BRINE, M.HYDROGEN, M.OXYGEN, M.STEAM, M.CO2, M.EXTRACT, M.SOLVENT];
     if (sandbox || tool === 'filter') {
       box.insertAdjacentHTML('beforeend', `<h4>選択膜が通す物質</h4>`);
       const sel = document.createElement('div'); sel.className = 'fsel';
       for (const m of opts) {
-        if (!sandbox && m !== game.filterMat) continue;
-        const b = document.createElement('button'); b.className = 'mini' + (game.filterMat === m ? ' on' : '');
+        if (!sandbox && m !== filterMat) continue;
+        const b = document.createElement('button'); b.className = 'mini' + (filterMat === m ? ' on' : '');
         b.innerHTML = `<span class="sw" style="--sw:${css(m)}"></span>${MATS[m].name}`;
-        b.onclick = () => { game.filterMat = m; buildPalette(); };
+        b.onclick = () => { filterMat = m; op('setFilter', m); buildPalette(); };
         sel.appendChild(b);
       }
       box.appendChild(sel);
     }
   }
+  renderNodePanel();
+}
+
+/** 選択した機構の調整パネル */
+function renderNodePanel() {
+  const box = $('#nodeBox'); const body = $('#nodePanel');
+  const n = st?.nodes.find((q) => q.id === selected);
+  if (!n) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  const motor = n.type === 'rotor' || n.type === 'piston';
+  const lock = n.fixed && !sandbox;
+  const parent = st!.nodes.find((q) => q.id === n.parent);
+  body.innerHTML = `<div class="gl"><b>${NODE_NAMES[n.type]} #${n.id}</b>${lock ? '<span class="muted">（備え付け）</span>' : ''}</div>
+    <div class="muted">親：${parent ? `${NODE_NAMES[parent.type]} #${parent.id}` : 'なし（固定点）'}</div>
+    ${motor ? `<div class="row2"><button class="mini" data-k="dir">${n.type === 'rotor' ? (n.dir > 0 ? '↻ 時計回り' : '↺ 反時計回り') : (n.dir > 0 ? '⇡ 伸びる' : '⇣ 縮む')}</button><button class="mini ${n.on ? 'on' : ''}" data-k="on">${n.on ? '● 作動' : '○ 停止'}</button></div>
+      <label class="rng">速さ <input type="range" data-k="speed" min="0.05" max="${n.type === 'rotor' ? 3 : 1}" step="0.05" value="${n.speed}" ${lock ? 'disabled' : ''}></label>` : ''}
+    ${n.type === 'piston' ? `<label class="chk"><input type="checkbox" data-k="recip" ${n.recip ? 'checked' : ''} ${lock ? 'disabled' : ''}> 往復する</label>` : ''}
+    ${n.parent > 0 ? `<div class="muted">関節</div><div class="seg">${(['fixed', 'free', 'spring'] as JointType[]).map((j) => `<button data-j="${j}" class="${n.joint === j ? 'on' : ''}">${JOINT_NAMES[j]}</button>`).join('')}</div>
+      ${n.joint === 'spring' ? `<label class="rng">ばねの強さ <input type="range" data-k="k" min="1" max="20" step="0.5" value="${n.k}" ${lock ? 'disabled' : ''}></label>` : ''}` : ''}
+    ${lock ? '' : '<button class="btn danger" data-del="1">🗑 この機構（と子）を外す</button>'}`;
+  body.querySelectorAll<HTMLButtonElement>('[data-k="dir"]').forEach((b) => b.onclick = () => edit({ dir: -n.dir }));
+  body.querySelectorAll<HTMLButtonElement>('[data-k="on"]').forEach((b) => b.onclick = () => edit({ on: !n.on }));
+  body.querySelectorAll<HTMLInputElement>('input[type=range]').forEach((r) => r.onchange = () => edit({ [r.dataset.k!]: Number(r.value) }));
+  body.querySelectorAll<HTMLInputElement>('input[data-k="recip"]').forEach((r) => r.onchange = () => edit({ recip: r.checked }));
+  body.querySelectorAll<HTMLButtonElement>('[data-j]').forEach((b) => b.onclick = () => edit({ joint: b.dataset.j as JointType }));
+  body.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) => b.onclick = async () => { await op('pushUndo'); await op('removeNode', n.id); selected = 0; renderNodePanel(); blip(220, 0.05); });
+  async function edit(patch: Partial<NodeView>) { await op('pushUndo'); await op('editNode', n!.id, patch); renderNodePanel(); blip(560, 0.03); }
 }
 
 // ---------- ツールチップ ----------
@@ -188,62 +269,65 @@ const tip = $('#tip');
 function showTip(el: HTMLElement, html: string) {
   tip.innerHTML = html; tip.classList.add('show');
   const r = el.getBoundingClientRect();
-  let x = r.right + 10, y = r.top;
+  let x = r.right + 10; const y = r.top;
   if (x + 240 > innerWidth) x = r.left - 250;
   tip.style.left = x + 'px'; tip.style.top = Math.min(y, innerHeight - 100) + 'px';
 }
 function hideTip() { tip.classList.remove('show'); }
 
 // ---------- HUD ----------
-const fmt = (v: number) => (v === Infinity ? '∞' : String(v));
+const fmt = (v: number) => (v === Infinity || v == null ? '∞' : String(v));
+let hudTimer = 0;
+function hudSoon() { if (!hudTimer) hudTimer = window.setTimeout(() => { hudTimer = 0; hud(); }, 30); }
 function hud() {
-  const g = game;
-  const sandbox = level === SANDBOX;
-  $('#go').textContent = !g.flowing ? '💧 放水' : paused ? '▶ 再開' : '⏸ 停止';
+  const g = st; if (!g || !level) return;
+  $('#go').textContent = !g.flowing ? (level.sources.length ? '💧 放水' : '▶ 始動') : paused ? '▶ 再開' : '⏸ 停止';
   ($('#undo') as HTMLButtonElement).disabled = !g.canUndo;
   ($('#redo') as HTMLButtonElement).disabled = !g.canRedo;
   const gl = $('#goals'); gl.innerHTML = '';
+  const S2 = g.S * g.S;
   level.goals.forEach((go, k) => {
-    const p = Math.min(1, g.progress[k] / go.need);
+    const need = go.need * S2;
+    const p = Math.min(1, g.progress[k] / need);
     const verb = go.mode === 'absorb' ? `壺に${go.label}を集める` : go.mode === 'fill' ? `枠を${go.label}で満たす` : `${go.label}を起こす`;
-    gl.insertAdjacentHTML('beforeend', `<div class="goal ${p >= 1 ? 'ok' : ''}"><div class="gl"><span>${p >= 1 ? '✔' : '◎'} ${verb}</span><b>${Math.min(g.progress[k], go.need)}/${go.need}</b></div><div class="bar"><i style="width:${p * 100}%"></i></div></div>`);
+    gl.insertAdjacentHTML('beforeend', `<div class="goal ${p >= 1 ? 'ok' : ''}"><div class="gl"><span>${p >= 1 ? '✔' : '◎'} ${verb}</span><b>${Math.min(g.progress[k], need)}/${need}</b></div><div class="bar"><i style="width:${p * 100}%"></i></div></div>`);
   });
-  $('#flow').textContent = sandbox ? '' : level.sources.length ? (g.flowing ? `残り湧出量 ${g.sourcesLeft}` : 'Space または「放水」で開始') : (g.flowing ? '稼働中' : '配置したら「放水」で開始');
+  $('#flow').textContent = sandbox ? '' : level.sources.length ? (g.flowing ? `残り湧出量 ${g.sourcesLeft}` : 'Space または「放水」で開始') : (g.flowing ? '稼働中' : '配置したら「始動」で開始');
   const inv = $('#inv'); inv.innerHTML = '';
-  const names: [keyof typeof g.inv, string, number][] = [['ink', '壁インク', M.PWALL], ['heater', 'ヒーター', M.HEATER], ['cooler', 'クーラー', M.COOLER], ['igniter', '着火器', M.IGNITER], ['electro', '電解槽', M.ELECTRO], ['filter', '選択膜', M.FILTER], ['pump', 'ポンプ', M.PWALL]];
-  for (const [k, n, m] of names) {
-    const base = sandbox ? Infinity : level.inv[k] ?? 0;
+  const names: [keyof Inventory, string, string][] = [['ink', '壁インク', css(M.PWALL)], ['heater', 'ヒーター', css(M.HEATER)], ['cooler', 'クーラー', css(M.COOLER)], ['igniter', '着火器', css(M.IGNITER)], ['electro', '簡易電解板', css(M.ELECTRO)], ['filter', '選択膜', css(M.FILTER)], ['pump', 'ポンプ', '#9dffb8'], ['proc', '循環装置', css(M.PROCESSOR)], ['piston', 'ピストン', '#ffd27a'], ['rotor', '回転モーター', '#7fd3ff'], ['plate', '可動板（セル）', css(M.MOVER)], ['guide', 'ガイド', css(M.GUIDE)]];
+  for (const [k, n, c] of names) {
+    const base = sandbox ? Infinity : g.invBase[k] ?? 0;
     if (!base) continue;
     const pct = base === Infinity ? 100 : (g.inv[k] / base) * 100;
-    inv.insertAdjacentHTML('beforeend', `<div class="it"><span class="sw" style="--sw:${k === 'pump' ? '#9dffb8' : css(m)}"></span><span>${n}</span><b>${fmt(g.inv[k])}</b><div class="bar thin"><i style="width:${pct}%"></i></div></div>`);
+    inv.insertAdjacentHTML('beforeend', `<div class="it"><span class="sw" style="--sw:${c}"></span><span>${n}</span><b>${fmt(g.inv[k])}</b><div class="bar thin"><i style="width:${pct}%"></i></div></div>`);
   }
   if (!sandbox) {
-    const th = starThresholds(level); const c = g.cost();
+    const th = starThresholds(level); const c = g.cost;
     const now = c <= th.three ? 3 : c <= th.two ? 2 : 1;
     $('#score').innerHTML = `<div class="gl"><span>資源コスト</span><b>${c}</b></div>
       <div class="th ${now === 3 ? 'on' : ''}"><span>★★★</span><span>≤ ${th.three}</span></div>
       <div class="th ${now === 2 ? 'on' : ''}"><span>★★☆</span><span>≤ ${th.two}</span></div>
       <div class="th ${now === 1 ? 'on' : ''}"><span>★☆☆</span><span>それ以上</span></div>
-      <div class="muted">インク・膜1セル = 1、装置1個 = 40</div>`;
+      <div class="muted">インク・膜・板1セル = 1、装置・モーター1個 = 40</div>`;
   }
-  $('#brushv').textContent = brushLabel(g.brush);
-  const bs = $('#brush') as HTMLInputElement; if (bs.value !== String(g.brush)) bs.value = String(g.brush);
+  $('#brushv').textContent = brushLabel(brush);
+  const bs = $('#brush') as HTMLInputElement; if (bs.value !== String(brush)) bs.value = String(brush);
 }
 
 // ---------- カメラ ----------
 function resize() {
-  const st = $('#stage'); const r = st.getBoundingClientRect();
+  const s = $('#stage'); const r = s.getBoundingClientRect();
   dpr = Math.min(devicePixelRatio || 1, 2);
   canvas.width = Math.max(1, Math.floor(r.width * dpr)); canvas.height = Math.max(1, Math.floor(r.height * dpr));
   canvas.style.width = r.width + 'px'; canvas.style.height = r.height + 'px';
 }
 function fit() {
-  if (!game) return;
-  const s = Math.min(canvas.width / game.sim.w, canvas.height / game.sim.h) * 0.96;
-  cam.s = s; cam.x = (canvas.width - game.sim.w * s) / 2; cam.y = (canvas.height - game.sim.h * s) / 2;
+  if (!off.width) return;
+  const s = Math.min(canvas.width / off.width, canvas.height / off.height) * 0.96;
+  cam.s = s; cam.x = (canvas.width - off.width * s) / 2; cam.y = (canvas.height - off.height * s) / 2;
 }
 function zoomAt(f: number, sx: number, sy: number) {
-  const ns = Math.max(1.5, Math.min(60, cam.s * f));
+  const ns = Math.max(0.8, Math.min(40, cam.s * f));
   const k = ns / cam.s;
   cam.x = sx - (sx - cam.x) * k; cam.y = sy - (sy - cam.y) * k; cam.s = ns;
 }
@@ -258,15 +342,16 @@ const pointers = new Map<number, { x: number; y: number }>();
 let drawing = false, erasing = false, last: [number, number] | null = null, panning = false, spaceHeld = false, spaceUsed = false;
 let pinch: { d: number; cx: number; cy: number } | null = null;
 let hover: [number, number] = [-1, -1];
+let dragStart: [number, number] | null = null; // 板・ピストンのドラッグ
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-canvas.addEventListener('pointerdown', (e) => {
+canvas.addEventListener('pointerdown', async (e) => {
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (briefOpen) closeBrief();
   if (pointers.size === 2) {
-    // ピンチ開始：描画を取り消す
-    if (drawing) { game.undo(); drawing = false; }
+    if (drawing) { op('undo'); drawing = false; }
+    dragStart = null;
     const [a, b] = [...pointers.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
     return;
@@ -274,12 +359,20 @@ canvas.addEventListener('pointerdown', (e) => {
   if (e.button === 1 || spaceHeld || (e.button === 0 && e.altKey)) { panning = true; spaceUsed = true; return; }
   erasing = e.button === 2 || tool === 'erase';
   const c = toCell(e.clientX, e.clientY);
-  game.pushUndo();
+  if (!erasing && (tool === 'plate' || tool === 'piston')) { dragStart = c; return; }
+  if (!erasing && tool === 'select') {
+    selected = (await op<number>('pickNode', c[0], c[1])) || 0; renderNodePanel();
+    if (!selected) toast('機構（モーター・板）をクリックしてね');
+    return;
+  }
+  op('pushUndo');
   drawing = true; last = c;
-  if (game.apply(tool, c[0], c[1], erasing)) feedback(c);
-  if (tool === 'pump') { drawing = false; if (!game.pendingPump) toast('ポンプを設置した'); else toast('吐出口をクリック'); }
-  if (tool in DEVICE_MAT) drawing = false;
-  hud();
+  if (!erasing && tool === 'rotor') { drawing = false; const id = await op<number>('addRotor', c[0], c[1]); if (id) { selected = id; feedback(c); toast('回転モーターを置いた（選択ツールで向きを変えられる）'); } else toast('回転モーターが足りない'); hud(); renderNodePanel(); return; }
+  if (!erasing && tool === 'disc') { drawing = false; const id = await op<number>('addDisc', c[0], c[1], (brush + 3) / 2 + SCALE); if (id) feedback(c); else toast('可動板の材料が足りない'); return; }
+  const ok = await op<boolean>('apply', tool, c[0], c[1], erasing);
+  if (ok) feedback(c);
+  if (tool === 'pump' && !erasing) { drawing = false; toast(st?.pendingPump ? '吐出口をクリック' : 'ポンプを設置した'); }
+  if (isDeviceTool(tool) && !erasing) { drawing = false; if (!ok) toast('ここには置けない（空き・流体の上に置こう）'); }
 });
 canvas.addEventListener('pointermove', (e) => {
   const prev = pointers.get(e.pointerId);
@@ -298,12 +391,26 @@ canvas.addEventListener('pointermove', (e) => {
   if (panning && prev) { cam.x += (e.clientX - prev.x) * dpr; cam.y += (e.clientY - prev.y) * dpr; return; }
   if (!drawing || !last) return;
   const c = hover;
-  if (game.stroke(tool, last[0], last[1], c[0], c[1], erasing)) feedback(c);
-  last = c; hud();
+  op('stroke', tool, last[0], last[1], c[0], c[1], erasing);
+  if (Math.random() < 0.5) feedback(c);
+  last = c;
 });
-const endPointer = (e: PointerEvent) => {
+const endPointer = async (e: PointerEvent) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
+  if (dragStart && pointers.size === 0) {
+    const a = dragStart, b = toCell(e.clientX, e.clientY); dragStart = null;
+    await op('pushUndo');
+    if (tool === 'plate') {
+      const id = await op<number>('addPlate', a[0], a[1], b[0], b[1], Math.max(2, Math.round((brush + 1) / 2)));
+      if (id) { feedback(b); selected = id; const n = st?.nodes.find((q) => q.id === id); toast(n?.parent ? '可動板を親に付けた' : '可動板を置いた（固定点）'); } else toast('可動板の材料が足りない');
+    } else {
+      const far = Math.hypot(b[0] - a[0], b[1] - a[1]) >= 4;
+      const id = await op<number>('addPiston', a[0], a[1], far ? b[0] : a[0], far ? b[1] : a[1] - 15 * SCALE);
+      if (id) { feedback(b); selected = id; toast('ピストンを置いた（先端に板やモーターを付けよう）'); } else toast('ピストンが足りない');
+    }
+    renderNodePanel(); hud();
+  }
   if (pointers.size === 0) { drawing = false; panning = false; last = null; }
 };
 canvas.addEventListener('pointerup', endPointer);
@@ -311,7 +418,7 @@ canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', () => { hover = [-1, -1]; $('#inspect').classList.remove('show'); });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (e.shiftKey) { setBrush(game.brush + (e.deltaY > 0 ? -1 : 1)); return; }
+  if (e.shiftKey) { setBrush(brush + (e.deltaY > 0 ? -1 : 1)); return; }
   const r = canvas.getBoundingClientRect();
   zoomAt(Math.exp(-e.deltaY * 0.0015), (e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
 }, { passive: false });
@@ -320,15 +427,16 @@ let lastSfx = 0;
 function feedback(c: [number, number]) {
   const now = performance.now();
   if (now - lastSfx > 45) { blip(erasing ? 220 : 380 + Math.random() * 60, 0.03, 'triangle', 0.025); lastSfx = now; }
-  if (Math.random() < 0.4) addP({ x: c[0] + 0.5, y: c[1] + 0.5, vx: (Math.random() - 0.5) * 0.4, vy: -Math.random() * 0.4, c: erasing ? '#8892c0' : '#ffe3a0', life: 18, max: 18, size: 0.5 });
+  if (Math.random() < 0.4) addP({ x: c[0] + 0.5, y: c[1] + 0.5, vx: (Math.random() - 0.5) * 0.8, vy: -Math.random() * 0.8, c: erasing ? '#8892c0' : '#ffe3a0', life: 18, max: 18, size: 1 });
 }
 
 function inspect() {
   const el = $('#inspect');
   const [x, y] = hover;
-  if (!game || !game.sim.inside(x, y)) { el.classList.remove('show'); return; }
-  const i = game.sim.idx(x, y), m = game.sim.t[i];
-  el.innerHTML = `<span class="sw" style="--sw:${css(m)}"></span>${m === M.EMPTY ? '空' : MATS[m].name}<span class="muted">　${game.sim.temp[i].toFixed(0)}℃　(${x}, ${y})</span>`;
+  const hv = st?.hover;
+  if (!st || x < 0 || y < 0 || x >= st.w || y >= st.h || !hv) { el.classList.remove('show'); return; }
+  const m = hv.m;
+  el.innerHTML = `<span class="sw" style="--sw:${css(m)}"></span>${m === M.EMPTY ? '空' : MATS[m].name}<span class="muted">　${hv.temp.toFixed(0)}℃　(${x}, ${y})</span>`;
   el.classList.add('show');
 }
 
@@ -338,11 +446,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); if (!spaceHeld) { spaceHeld = true; spaceUsed = false; canvas.classList.add('grab'); } return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) doRedo(); else doUndo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); return; }
-  if (e.key === 'Escape') { if (game.pendingPump) { game.pendingPump = null; toast('ポンプ配置を取り消した'); } else showMenu(); return; }
+  if (e.key === 'Escape') { if (st?.pendingPump) { op('cancelPump'); toast('ポンプ配置を取り消した'); } else if (selected) { selected = 0; renderNodePanel(); } else showMenu(); return; }
   if (e.key === 'r' || e.key === 'R') { retry(); return; }
   if (e.key === 'f' || e.key === 'F') { fit(); return; }
   if (e.key === '.') { stepOnce(); return; }
-  if (e.key === '[' || e.key === ']') { setBrush(game.brush + (e.key === ']' ? 1 : -1)); return; }
+  if (e.key === '[' || e.key === ']') { setBrush(brush + (e.key === ']' ? 1 : -1)); return; }
   const b = [...document.querySelectorAll<HTMLButtonElement>('.tool')].find((x) => x.querySelector('kbd')?.textContent === e.key);
   b?.click();
 });
@@ -350,21 +458,22 @@ window.addEventListener('keyup', (e) => {
   if (e.code === 'Space') { spaceHeld = false; canvas.classList.remove('grab'); if (!spaceUsed && !$('#play').classList.contains('hidden')) toggleFlow(); }
 });
 
-function toggleFlow() {
-  if (!game.flowing) { game.start(); paused = false; blip(440, 0.18, 'triangle'); blip(660, 0.18, 'triangle'); }
+async function toggleFlow() {
+  if (!st) return;
+  if (!st.flowing) { await op('start'); paused = false; blip(440, 0.18, 'triangle'); blip(660, 0.18, 'triangle'); }
   else paused = !paused;
   hud();
 }
-function stepOnce() { paused = true; if (!game.flowing) game.start(); game.tick(); hud(); }
-function retry() { game.reset(true); parts = []; $('#win').classList.add('hidden'); hud(); toast('配置を残して流し直し'); }
-function doUndo() { if (game.undo()) { hud(); blip(300, 0.04); } }
-function doRedo() { if (game.redo()) { hud(); blip(500, 0.04); } }
+async function stepOnce() { paused = true; await op('step'); hud(); }
+async function retry() { await op('reset', true); parts = []; $('#win').classList.add('hidden'); hud(); toast('配置を残して流し直し'); }
+async function doUndo() { if (await op('undo')) { hud(); renderNodePanel(); blip(300, 0.04); } }
+async function doRedo() { if (await op('redo')) { hud(); renderNodePanel(); blip(500, 0.04); } }
 function closeBrief() { briefOpen = false; $('#brief').classList.add('hidden'); }
 
 $('#go').onclick = toggleFlow;
 $('#step').onclick = stepOnce;
 $('#retry').onclick = retry;
-$('#wipe').onclick = () => { game.pushUndo(); game.reset(false); hud(); toast('最初からやり直し'); };
+$('#wipe').onclick = async () => { await op('pushUndo'); await op('reset', false); selected = 0; renderNodePanel(); hud(); toast('最初からやり直し'); };
 $('#undo').onclick = doUndo; $('#redo').onclick = doRedo;
 $('#speed').onclick = () => { speed = speed >= 4 ? 1 : speed + 1; $('#speed').textContent = `${speed}x`; };
 $('#back').onclick = showMenu;
@@ -376,11 +485,11 @@ $('#zfit').onclick = fit;
 $('#next').onclick = () => { const k = LEVELS.indexOf(level); startLevel(LEVELS[k + 1] ?? SANDBOX); };
 $('#again').onclick = () => startLevel(level);
 function setBrush(v: number) {
-  const b = clampBrush(v);
-  if (game) game.brush = b;
-  ($('#brush') as HTMLInputElement).value = String(b);
-  $('#brushv').textContent = brushLabel(b);
-  saveBrush(b);
+  brush = clampBrush(v);
+  op('setBrush', brush);
+  ($('#brush') as HTMLInputElement).value = String(brush);
+  $('#brushv').textContent = brushLabel(brush);
+  saveBrush(brush);
 }
 ($('#brush') as HTMLInputElement).oninput = (e) => { setBrush(Number((e.target as HTMLInputElement).value)); hud(); };
 document.querySelectorAll<HTMLButtonElement>('#viewmode button').forEach((b) => b.onclick = () => {
@@ -389,187 +498,178 @@ document.querySelectorAll<HTMLButtonElement>('#viewmode button').forEach((b) => 
   viewMode = v as 'mat' | 'temp';
   document.querySelectorAll('#viewmode button[data-v="mat"],#viewmode button[data-v="temp"]').forEach((x) => x.classList.toggle('on', x === b));
 });
-($('#ambient') as HTMLInputElement).onchange = (e) => { game.sim.ambient = (e.target as HTMLInputElement).checked ? -10 : 20; };
+($('#ambient') as HTMLInputElement).onchange = (e) => { op('setAmbient', (e.target as HTMLInputElement).checked ? -10 : 20); };
 
-// 実験データの保存・書き出し
-function serialize() {
-  const s = game.sim;
-  const enc = (a: Uint8Array) => { let str = ''; for (let i = 0; i < a.length; i += 8192) str += String.fromCharCode(...a.subarray(i, i + 8192)); return btoa(str); };
-  return JSON.stringify({ app: 'shizuku-alchemy', v: 2, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps });
-}
-function deserialize(json: string) {
-  const d = JSON.parse(json); const s = game.sim;
-  if (d.app !== 'shizuku-alchemy' || d.w !== s.w || d.h !== s.h) throw new Error('形式が違います');
-  const dec = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
-  game.pushUndo();
-  s.t.set(dec(d.t)); s.aux.set(dec(d.aux)); s.temp.set(new Float32Array(dec(d.temp).buffer)); s.pumps = d.pumps ?? [];
-}
-$('#save').onclick = () => { try { localStorage.setItem(SAVE + '-lab', serialize()); toast('ブラウザに保存した'); } catch { toast('保存できなかった'); } };
-$('#load').onclick = () => { const d = localStorage.getItem(SAVE + '-lab'); if (!d) return toast('保存データがない'); try { deserialize(d); toast('読み込んだ'); } catch (e) { toast(String((e as Error).message)); } };
-$('#export').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([serialize()], { type: 'application/json' })); a.download = `shizuku-lab-${Date.now()}.json`; a.click(); };
+// 実験データの保存・書き出し（v3。旧 v2 の保存も読み込める）
+const loadLab = async (json: string) => { await op('deserialize', json); toast('読み込んだ'); };
+$('#save').onclick = async () => { try { localStorage.setItem(LAB_SAVE, await op<string>('serialize')); toast('ブラウザに保存した'); } catch { toast('保存できなかった'); } };
+$('#load').onclick = () => { const d = localStorage.getItem(LAB_SAVE) ?? localStorage.getItem(SAVE + '-lab'); if (!d) return toast('保存データがない'); loadLab(d); };
+$('#export').onclick = async () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([await op<string>('serialize')], { type: 'application/json' })); a.download = `shizuku-lab-${Date.now()}.json`; a.click(); };
 $('#import').onclick = () => $('#file').click();
-($('#file') as HTMLInputElement).onchange = async (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return; try { deserialize(await f.text()); toast('読み込んだ'); } catch (err) { toast(String((err as Error).message)); } };
+($('#file') as HTMLInputElement).onchange = async (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return; loadLab(await f.text()); };
 
 let toastT = 0;
-function toast(s: string) { const t = $('#toast'); t.textContent = s; t.classList.add('show'); clearTimeout(toastT); toastT = window.setTimeout(() => t.classList.remove('show'), 1500); }
+function toast(s: string) { const t = $('#toast'); t.textContent = s; t.classList.add('show'); clearTimeout(toastT); toastT = window.setTimeout(() => t.classList.remove('show'), 1600); }
 
 // ---------- クリア ----------
+let lastWin: { cost: number; stars: number } | null = null;
 function onWin() {
-  const { cost, three, two, stars } = game.starScore();
+  if (!st || sandbox) return;
+  const th = starThresholds(level); const cost = st.cost;
+  const stars = cost <= th.three ? 3 : cost <= th.two ? 2 : 1;
+  lastWin = { cost, stars };
   prog.stars[level.id] = Math.max(prog.stars[level.id] || 0, stars);
   if (!prog.learned.includes(level.id)) prog.learned.push(level.id);
   saveProg();
   $('#winstars').innerHTML = [0, 1, 2].map((k) => `<span class="${k < stars ? 'on' : ''}" style="animation-delay:${k * 0.15}s">★</span>`).join('');
-  $('#winmsg').textContent = `資源コスト ${cost}（★★★ ≤ ${three} ／ ★★ ≤ ${two}）　${stars === 3 ? '見事な錬金術！' : stars === 2 ? 'いい流れ！' : 'クリア！ 少ない資源で★3を目指そう'}`;
+  $('#winmsg').textContent = `資源コスト ${cost}（★★★ ≤ ${th.three} ／ ★★ ≤ ${th.two}）　${stars === 3 ? '見事な錬金術！' : stars === 2 ? 'いい流れ！' : 'クリア！ 少ない資源で★3を目指そう'}`;
   const newTools = TOOLS.filter((t) => t.learnAt === level.id).map((t) => t.name);
   $('#winlearn').innerHTML = newTools.length ? `🔓 自由実験室で習得：${newTools.join('・')}` : '';
   $('#next').textContent = LEVELS.indexOf(level) === LEVELS.length - 1 ? '自由実験室へ ▶' : '次へ ▶';
   $('#win').classList.remove('hidden');
   [523, 659, 784, 1046].forEach((f, k) => setTimeout(() => blip(f, 0.3, 'triangle', 0.06), k * 110));
-  for (let k = 0; k < 160; k++) addP({ x: game.sim.w / 2, y: game.sim.h / 2, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.9) * 2.4, c: `hsl(${Math.random() * 360} 90% 65%)`, life: 110, max: 110, size: 0.9, g: 0.04 });
+  for (let k = 0; k < 160; k++) addP({ x: st.w / 2, y: st.h / 2, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.9) * 4.8, c: `hsl(${Math.random() * 360} 90% 65%)`, life: 110, max: 110, size: 1.8, g: 0.08 });
 }
 
 // ---------- 描画 ----------
-const clamp = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v | 0);
-function tempColor(T: number): [number, number, number] {
-  if (T < 20) { const k = Math.min(1, (20 - T) / 80); return [20 * (1 - k), 40 + 60 * (1 - k), 90 + 165 * k]; }
-  const k = Math.min(1, (T - 20) / 1000);
-  return [40 + 215 * Math.min(1, k * 2), 40 + 200 * Math.max(0, k * 2 - 0.6), 60 * (1 - k) + 200 * Math.max(0, k - 0.8) * 5];
-}
-function paint(now: number) {
-  const s = game.sim; const { t, temp: tp, noise: nz, w } = s;
-  const wave = now / 280;
-  const bg = MATS[M.EMPTY].color;
-  for (let i = 0; i < t.length; i++) {
-    const m = t[i]; const d = MATS[m]; let r: number, g: number, b: number;
-    let gl = 0;
-    if (viewMode === 'temp') {
-      [r, g, b] = m === M.EMPTY ? [bg[0], bg[1], bg[2]] : tempColor(tp[i]);
-      if (m === M.WALL || m === M.PWALL) { r = 50; g = 54; b = 70; }
-    } else {
-      [r, g, b] = d.color;
-      if (m !== M.EMPTY) {
-        const n = nz[i] - 12;
-        if (d.kind === 'liquid') {
-          const x = i % w;
-          const sh = Math.sin(wave + x * 0.25 + nz[i] * 0.05) * 8;
-          r += sh + n * 0.4; g += sh + n * 0.4; b += sh + n * 0.4;
-          // 水面のハイライト
-          const up = i >= w ? t[i - w] : M.WALL;
-          if (up === M.EMPTY || MATS[up].kind === 'gas') { r += 45; g += 45; b += 45; }
-          else if (up !== m) { r -= 10; g -= 10; b -= 10; }
-        } else if (d.kind === 'gas') {
-          // 気体は背景と半透明に合成
-          const a = m === M.FIRE ? 0.95 : 0.35 + nz[i] / 80;
-          r = bg[0] + (r - bg[0]) * a + n; g = bg[1] + (g - bg[1]) * a + n; b = bg[2] + (b - bg[2]) * a + n;
-          if (m === M.FIRE) { g += Math.sin(wave * 3 + nz[i]) * 40; }
-        } else if (m === M.WALL || m === M.PWALL) {
-          // 壁のエッジ
-          const up = i >= w ? t[i - w] : m;
-          const e = up !== M.WALL && up !== M.PWALL ? 30 : 0;
-          r += n * 0.5 + e; g += n * 0.5 + e; b += n * 0.5 + e;
-        } else if (m === M.FILTER) {
-          const c = MATS[s.aux[i]]?.color ?? [255, 255, 255];
-          const k = ((i % w) + Math.floor(i / w)) % 3 === 0 ? 1 : 0.35;
-          r = c[0] * k + 30; g = c[1] * k + 30; b = c[2] * k + 30;
-        } else { r += n; g += n; b += n; }
-        if (m === M.LAVA) { g += Math.sin(wave * 1.5 + nz[i]) * 25; }
-        // 温度の色づけ
-        const T = tp[i];
-        if (d.kind !== 'device' && m !== M.WALL && m !== M.PWALL) {
-          if (T > 80) { const k = Math.min((T - 80) / 700, 1) * 0.55; r += (255 - r) * k; g *= 1 - k * 0.4; b *= 1 - k; }
-          else if (T < 0) { const k = Math.min(-T / 40, 1) * 0.4; r *= 1 - k; b += (255 - b) * k; }
-        }
-        gl = d.glow ?? 0;
-        if (tp[i] > 500 && d.kind !== 'device') gl = Math.max(gl, Math.min(1, (tp[i] - 500) / 700));
-        if (d.kind === 'device') { const p = 0.85 + Math.sin(wave * 2) * 0.15; r *= p; g *= p; b *= p; }
-      }
-    }
-    px[i] = 0xff000000 | (clamp(b) << 16) | (clamp(g) << 8) | clamp(r);
-    gpx[i] = gl > 0 ? ((clamp(255 * gl) << 24) | (clamp(b) << 16) | (clamp(g) << 8) | clamp(r)) : 0;
-  }
-  octx.putImageData(img, 0, 0);
-  if (glow) gctx.putImageData(gimg, 0, 0);
-}
-
 function draw(now: number) {
-  const s = game.sim;
-  paint(now);
+  if (!st) return;
+  const W = st.w, H = st.h, S = cam.s, sc = st.S;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#070914'; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.translate(cam.x, cam.y);
-  const S = cam.s;
   ctx.shadowColor = '#0008'; ctx.shadowBlur = 30 * dpr;
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, s.w * S, s.h * S);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W * S, H * S);
   ctx.shadowBlur = 0;
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(off, 0, 0, s.w * S, s.h * S);
+  ctx.drawImage(off, 0, 0, W * S, H * S);
   if (glow && viewMode === 'mat') {
     ctx.globalCompositeOperation = 'lighter';
     ctx.imageSmoothingEnabled = true;
-    ctx.filter = `blur(${Math.max(2, S * 1.6)}px)`;
+    ctx.filter = `blur(${Math.max(2, S * 1.6 * sc)}px)`;
     ctx.globalAlpha = 0.9;
-    ctx.drawImage(glowC, 0, 0, s.w * S, s.h * S);
+    ctx.drawImage(glowC, 0, 0, W * S, H * S);
     ctx.filter = 'none'; ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
   }
-  // セルのグリッド（拡大時）
   if (S > 14) {
     ctx.strokeStyle = '#ffffff08'; ctx.lineWidth = 1; ctx.beginPath();
-    for (let x = 0; x <= s.w; x++) { ctx.moveTo(x * S, 0); ctx.lineTo(x * S, s.h * S); }
-    for (let y = 0; y <= s.h; y++) { ctx.moveTo(0, y * S); ctx.lineTo(s.w * S, y * S); }
+    for (let x = 0; x <= W; x++) { ctx.moveTo(x * S, 0); ctx.lineTo(x * S, H * S); }
+    for (let y = 0; y <= H; y++) { ctx.moveTo(0, y * S); ctx.lineTo(W * S, y * S); }
     ctx.stroke();
   }
-  // 奈落
+  const L = S * sc; // 論理座標1マスの画面サイズ
   for (const d of level.drains) {
-    const grd = ctx.createLinearGradient(0, d.y * S, 0, (d.y + d.h + 3) * S);
+    const grd = ctx.createLinearGradient(0, d.y * L, 0, (d.y + d.h + 3) * L);
     grd.addColorStop(0, '#ff2d6a88'); grd.addColorStop(1, '#ff2d6a00');
-    ctx.fillStyle = grd; ctx.fillRect(d.x * S, (d.y - 1) * S, d.w * S, (d.h + 4) * S);
+    ctx.fillStyle = grd; ctx.fillRect(d.x * L, (d.y - 1) * L, d.w * L, (d.h + 4) * L);
   }
-  // ゴール
   level.goals.forEach((g, k) => {
     if (g.mode === 'stat') return;
-    const done = game.progress[k] >= g.need;
+    const need = g.need * sc * sc;
+    const done = st!.progress[k] >= need;
     const col = done ? '#7dffa8' : '#ffe36e';
     ctx.save();
     ctx.setLineDash([6 * dpr, 4 * dpr]); ctx.lineDashOffset = -now / 40;
     ctx.strokeStyle = col; ctx.lineWidth = 2 * dpr; ctx.shadowColor = col; ctx.shadowBlur = 14 * dpr;
-    ctx.strokeRect(g.x * S, g.y * S, g.w * S, g.h * S);
-    ctx.fillStyle = col + '14'; ctx.fillRect(g.x * S, g.y * S, g.w * S, g.h * S);
-    const p = Math.min(1, game.progress[k] / g.need);
-    ctx.fillStyle = col + '30'; ctx.fillRect(g.x * S, (g.y + g.h * (1 - p)) * S, g.w * S, g.h * p * S);
+    ctx.strokeRect(g.x * L, g.y * L, g.w * L, g.h * L);
+    ctx.fillStyle = col + '14'; ctx.fillRect(g.x * L, g.y * L, g.w * L, g.h * L);
+    const p = Math.min(1, st!.progress[k] / need);
+    ctx.fillStyle = col + '30'; ctx.fillRect(g.x * L, (g.y + g.h * (1 - p)) * L, g.w * L, g.h * p * L);
     ctx.restore();
     ctx.font = `bold ${12 * dpr}px system-ui, sans-serif`; ctx.fillStyle = col;
-    ctx.fillText(`${done ? '✔' : '◎'} ${g.label} ${Math.floor(p * 100)}%`, g.x * S, g.y * S - 6 * dpr);
+    ctx.fillText(`${done ? '✔' : '◎'} ${g.label} ${Math.floor(p * 100)}%`, g.x * L, g.y * L - 6 * dpr);
   });
-  // 湧き口
   level.sources.forEach((src, k) => {
-    const alive = game.emitted[k] < src.total;
+    const alive = (st!.emitted[k] ?? 0) < src.total * sc * sc;
     const c = alive ? css(src.mats[0]) : '#555';
-    const r = (1.6 + (game.flowing && alive ? Math.sin(now / 120) * 0.25 : 0)) * S;
+    const r = (1.6 + (st!.flowing && alive ? Math.sin(now / 120) * 0.25 : 0)) * L;
+    const cx = (src.x + 0.5) * L, cy = (src.y - 1.5) * L;
     ctx.save(); ctx.shadowColor = c; ctx.shadowBlur = alive ? 16 * dpr : 0;
-    ctx.fillStyle = c; ctx.beginPath(); ctx.arc((src.x + 0.5) * S, (src.y - 1.5) * S, r, 0, 7); ctx.fill();
-    if (src.mats.length > 1) { ctx.fillStyle = css(src.mats[1]); ctx.beginPath(); ctx.arc((src.x + 0.5) * S, (src.y - 1.5) * S, r, 0, Math.PI); ctx.fill(); }
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    if (src.mats.length > 1) { ctx.fillStyle = css(src.mats[1]); ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI); ctx.fill(); }
     ctx.restore();
-    ctx.strokeStyle = '#fff9'; ctx.lineWidth = 1.5 * dpr; ctx.beginPath(); ctx.arc((src.x + 0.5) * S, (src.y - 1.5) * S, r, 0, 7); ctx.stroke();
+    ctx.strokeStyle = '#fff9'; ctx.lineWidth = 1.5 * dpr; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
   });
   // ポンプ
   const drawPort = (x: number, y: number, c: string, label: string) => {
     ctx.fillStyle = c; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * dpr;
-    ctx.beginPath(); ctx.arc((x + 0.5) * S, (y + 0.5) * S, 2.6 * S, 0, 7); ctx.globalAlpha = 0.25; ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
-    ctx.font = `bold ${11 * dpr}px system-ui`; ctx.fillStyle = '#fff'; ctx.fillText(label, (x + 3.4) * S, (y + 0.5) * S);
+    ctx.beginPath(); ctx.arc((x + 0.5) * S, (y + 0.5) * S, 2.6 * L, 0, 7); ctx.globalAlpha = 0.25; ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
+    ctx.font = `bold ${11 * dpr}px system-ui`; ctx.fillStyle = '#fff'; ctx.fillText(label, (x + 0.5) * S + 3 * L, (y + 0.5) * S);
   };
-  for (const p of s.pumps) {
+  for (const p of st.pumps) {
     ctx.save();
-    ctx.strokeStyle = '#9dffb8aa'; ctx.lineWidth = Math.max(2, S * 0.7); ctx.setLineDash([S * 1.5, S]); ctx.lineDashOffset = -now / 25;
+    ctx.strokeStyle = '#9dffb8aa'; ctx.lineWidth = Math.max(2, L * 0.7); ctx.setLineDash([L * 1.5, L]); ctx.lineDashOffset = -now / 25;
     ctx.beginPath(); ctx.moveTo((p.ax + 0.5) * S, (p.ay + 0.5) * S); ctx.lineTo((p.bx + 0.5) * S, (p.by + 0.5) * S); ctx.stroke();
     ctx.restore();
     drawPort(p.ax, p.ay, '#ff9d5c', '吸'); drawPort(p.bx, p.by, '#5cc8ff', '吐');
   }
-  if (game.pendingPump) {
-    drawPort(game.pendingPump.x, game.pendingPump.y, '#ff9d5c', '吸');
-    if (hover[0] >= 0) { ctx.strokeStyle = '#9dffb866'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo((game.pendingPump.x + 0.5) * S, (game.pendingPump.y + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke(); ctx.setLineDash([]); }
+  if (st.pendingPump) {
+    const pp = st.pendingPump;
+    drawPort(pp.x, pp.y, '#ff9d5c', '吸');
+    if (hover[0] >= 0) { ctx.strokeStyle = '#9dffb866'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo((pp.x + 0.5) * S, (pp.y + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke(); ctx.setLineDash([]); }
+  }
+  // 循環装置：記号とポート
+  for (const p of st.procs) {
+    const h = p.size >> 1;
+    const x0 = (p.x - h - 0.5) * S, y0 = (p.y - h - 0.5) * S, sz = p.size * S;
+    ctx.save();
+    ctx.font = `bold ${Math.max(9, sz * 0.38)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#2a0b22'; ctx.fillText(PROCESSES[p.mode].sym, x0 + sz / 2, y0 + sz / 2);
+    if (S * sc > 5) {
+      const d = Math.max(2, h) * S;
+      ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([3 * dpr, 3 * dpr]);
+      ctx.strokeStyle = '#ffd27a'; ctx.strokeRect(x0 - d, y0, d, sz); // 主入口
+      ctx.strokeStyle = '#7dffa8'; ctx.strokeRect(x0 + sz, y0, d, sz); // 主出口
+      ctx.strokeStyle = '#7fd3ff'; ctx.strokeRect(x0, y0 + sz, sz, d); // 補助
+    }
+    ctx.restore();
+    if (hover[0] >= 0 && Math.abs(hover[0] - p.x) <= p.size && Math.abs(hover[1] - p.y) <= p.size) {
+      ctx.font = `bold ${11 * dpr}px system-ui`; ctx.fillStyle = '#fff';
+      ctx.fillText(`${PROCESSES[p.mode].name}：${p.status || '待機'}（${p.count}回）`, x0, y0 - 6 * dpr);
+    }
+  }
+  // 機構：モーター・関節
+  for (const n of st.nodes) {
+    const sel = n.id === selected;
+    if (n.type === 'rotor') {
+      const r = 1.8 * L;
+      ctx.save(); ctx.translate(n.x * S, n.y * S);
+      ctx.fillStyle = sel ? '#ffffffcc' : '#7fd3ffcc'; ctx.strokeStyle = '#08111f'; ctx.lineWidth = 2 * dpr;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.rotate(n.a); ctx.strokeStyle = '#08111f'; ctx.beginPath(); ctx.moveTo(-r * 0.7, 0); ctx.lineTo(r * 0.7, 0); ctx.moveTo(0, -r * 0.7); ctx.lineTo(0, r * 0.7); ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = '#7fd3ff'; ctx.lineWidth = 1.5 * dpr; ctx.beginPath();
+      const a0 = n.dir > 0 ? -0.6 : 0.6; ctx.arc(n.x * S, n.y * S, r * 1.6, a0, a0 + n.dir * 1.6, n.dir < 0); ctx.stroke();
+    } else if (n.type === 'piston') {
+      ctx.save();
+      ctx.strokeStyle = '#ffd27a55'; ctx.lineWidth = 3 * dpr; ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.beginPath(); ctx.moveTo(n.x * S, n.y * S); ctx.lineTo((n.x + Math.cos(n.a) * n.amp) * S, (n.y + Math.sin(n.a) * n.amp) * S); ctx.stroke();
+      ctx.setLineDash([]); ctx.strokeStyle = sel ? '#fff' : '#ffd27a'; ctx.lineWidth = Math.max(3 * dpr, L * 0.9);
+      ctx.beginPath(); ctx.moveTo(n.x * S, n.y * S); ctx.lineTo(n.tx * S, n.ty * S); ctx.stroke();
+      ctx.fillStyle = '#ffd27a'; ctx.fillRect(n.x * S - L, n.y * S - L, 2 * L, 2 * L);
+      ctx.beginPath(); ctx.arc(n.tx * S, n.ty * S, 0.9 * L, 0, 7); ctx.fill();
+      ctx.restore();
+    } else {
+      if (n.parent > 0) {
+        ctx.fillStyle = n.joint === 'spring' ? '#9dffb8' : n.joint === 'free' ? '#ffb340' : '#ffffffaa';
+        ctx.beginPath(); ctx.arc(n.x * S, n.y * S, 0.8 * L, 0, 7); ctx.fill();
+      }
+      if (sel) {
+        ctx.save(); ctx.translate(n.x * S, n.y * S); ctx.rotate(n.a);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]);
+        if (n.type === 'circle') { ctx.beginPath(); ctx.arc(0, 0, n.r * S + 3, 0, 7); ctx.stroke(); }
+        else ctx.strokeRect((n.bx - n.w / 2) * S - 2, -n.h / 2 * S - 2, n.w * S + 4, n.h * S + 4);
+        ctx.restore();
+      }
+    }
+  }
+  // ドラッグ中の板・ピストン
+  if (dragStart && hover[0] >= 0) {
+    ctx.strokeStyle = tool === 'plate' ? css(M.MOVER) : '#ffd27a'; ctx.lineWidth = Math.max(2, L); ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.moveTo((dragStart[0] + 0.5) * S, (dragStart[1] + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke();
+    ctx.globalAlpha = 1;
   }
   // 粒子
   for (const p of parts) {
@@ -581,57 +681,49 @@ function draw(now: number) {
   parts = parts.filter((p) => p.life > 0);
   // カーソル
   if (hover[0] >= 0 && !panning) {
-    const dev = tool in DEVICE_MAT;
-    const r = dev ? 1.5 : tool === 'wall' ? (game.brush + 1) / 2 : tool === 'filter' ? 1 : game.brush + 1.5;
-    const cx = dev ? hover[0] + 0.5 : tool === 'wall' || tool === 'filter' ? hover[0] + (tool === 'filter' ? 1 : (game.brush + 1) / 2 - (game.brush >> 1)) : hover[0] + 0.5;
-    const cy = dev ? hover[1] + 0.5 : tool === 'wall' || tool === 'filter' ? hover[1] + (tool === 'filter' ? 1 : (game.brush + 1) / 2 - (game.brush >> 1)) : hover[1] + 0.5;
+    const b = brush;
     ctx.strokeStyle = tool === 'erase' ? '#ff8a8a' : '#ffffffcc'; ctx.lineWidth = 1.5 * dpr;
-    if (dev || tool === 'wall' || tool === 'filter') ctx.strokeRect((cx - r) * S, (cy - r) * S, r * 2 * S, r * 2 * S);
-    else { ctx.beginPath(); ctx.arc(cx * S, cy * S, r * S, 0, 7); ctx.stroke(); }
+    if (isDeviceTool(tool)) ctx.strokeRect((hover[0] - sc) * S, (hover[1] - sc) * S, 3 * sc * S, 3 * sc * S);
+    else if (tool === 'wall' || tool === 'guide') ctx.strokeRect((hover[0] - (b >> 1)) * S, (hover[1] - (b >> 1)) * S, (b + 1) * S, (b + 1) * S);
+    else if (tool === 'filter') ctx.strokeRect(hover[0] * S, hover[1] * S, 2 * sc * S, 2 * sc * S);
+    else if (['rotor', 'piston', 'plate', 'select', 'disc'].includes(tool)) { ctx.beginPath(); ctx.arc((hover[0] + 0.5) * S, (hover[1] + 0.5) * S, 2.5 * L, 0, 7); ctx.stroke(); }
+    else { ctx.beginPath(); ctx.arc((hover[0] + 0.5) * S, (hover[1] + 0.5) * S, (b + 1.5) * S, 0, 7); ctx.stroke(); }
   }
   ctx.restore();
 }
 
-// 炎・溶岩から火の粉
-function emitAmbient() {
-  const s = game.sim;
-  for (let k = 0; k < 30; k++) {
-    const i = (Math.random() * s.n) | 0; const m = s.t[i];
-    if ((m === M.FIRE || m === M.LAVA) && Math.random() < 0.5) {
-      const x = i % s.w, y = Math.floor(i / s.w);
-      if (s.get(x, y - 1) === M.EMPTY || MATS[s.get(x, y - 1)].kind === 'gas') addP({ x: x + 0.5, y, vx: (Math.random() - 0.5) * 0.15, vy: -Math.random() * 0.25 - 0.05, c: m === M.FIRE ? '#ffd27a' : '#ff8a3a', life: 50, max: 50, size: 0.35, g: -0.002 });
-    }
-  }
-}
-
-// ---------- ループ ----------
-let acc = 0, prevT = performance.now(), fpsT = 0, frames = 0, simMs = 0, hudT = 0;
+// ---------- ループ（Worker に計算と描画を依頼し、戻ってきた画像を表示） ----------
+let acc = 0, prevT = performance.now(), fpsT = 0, frames = 0, hudT = 0, owed = 0;
 function loop(now: number) {
-  if (game && !$('#play').classList.contains('hidden')) {
+  if (st && !$('#play').classList.contains('hidden')) {
     acc += Math.min(now - prevT, 100);
-    const t0 = performance.now();
-    let steps = 0;
-    while (acc >= 1000 / 60) {
-      if (!paused) for (let k = 0; k < speed && steps < 8; k++, steps++) {
-        const wasWon = game.won;
-        game.tick();
-        if (!wasWon && game.won) onWin();
+    while (acc >= 1000 / 60) { if (!paused && st.flowing !== undefined) owed += speed; acc -= 1000 / 60; }
+    if (paused) owed = 0;
+    if (!frameBusy && img) {
+      const n = Math.min(owed, 8); owed = Math.min(owed - n, 8);
+      const b = buf ?? new ArrayBuffer(st.w * st.h * 4), gb = gbuf ?? new ArrayBuffer(st.w * st.h * 4);
+      if (b.byteLength === st.w * st.h * 4) {
+        buf = null; gbuf = null; frameBusy = true;
+        send({ type: 'frame', ticks: n, viewMode, now, buf: b, gbuf: gb, hover }, [b, gb]);
       }
-      acc -= 1000 / 60;
     }
-    if (steps) simMs = simMs * 0.9 + ((performance.now() - t0) / steps) * 0.1;
-    emitAmbient();
     draw(now);
-    if (now - hudT > 150) { hud(); hudT = now; }
+    if (now - hudT > 150) { hud(); inspect(); hudT = now; }
     frames++;
-    if (now - fpsT > 1000) { $('#perf').textContent = `${frames} fps ・ ${simMs.toFixed(1)} ms/step`; frames = 0; fpsT = now; }
+    if (now - fpsT > 1000) { $('#perf').textContent = `${frames} fps ・ ${st.simMs.toFixed(2)} ms/tick（${st.w}×${st.h}・Worker・稼働チャンク ${st.awake}/${st.chunks}）`; frames = 0; fpsT = now; }
   }
   prevT = now;
   requestAnimationFrame(loop);
 }
-window.addEventListener('resize', () => { if (game) { resize(); fit(); } });
+window.addEventListener('resize', () => { if (st) { resize(); fit(); } });
 
 showMenu();
 requestAnimationFrame(loop);
-// テスト用フック
-(window as unknown as Record<string, unknown>).__sa = { get game() { return game; }, startLevel, LEVELS, SANDBOX, toggleFlow, setSpeed: (v: number) => { speed = v; } };
+// テスト用フック（Worker 越しに操作する）
+(window as unknown as Record<string, unknown>).__sa = {
+  get state() { return st; }, get level() { return level; }, get lastWin() { return lastWin; },
+  startLevel: (id: string) => startLevel(id === 'sandbox' ? SANDBOX : LEVELS.find((l) => l.id === id)!), op, toggleFlow,
+  LEVELS: LEVELS.map((l) => l.id), setSpeed: (v: number) => { speed = v; }, setTool: (t: Tool) => { tool = t; buildPalette(); }, select: (id: number) => { selected = id; renderNodePanel(); },
+  thresholds: (id: string) => starThresholds(LEVELS.find((l) => l.id === id)!),
+};
+void DEVICE_MAT;

@@ -70,3 +70,11 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   .perf{display:none}.ctrl{margin-left:0}.help{display:none}
 }
 .score{font-size:13px;display:grid;gap:4px}.th{display:flex;justify-content:space-between;padding:3px 8px;border-radius:8px;color:var(--mut);border:1px solid transparent}.th.on{color:var(--acc2);border-color:#ffe36e55;background:#ffe36e12}
+/* v5：機構パネル・新章 */
+.chapter h3 .new{font-size:10px;background:#ff7ad9;color:#200;padding:1px 6px;border-radius:8px;margin-left:6px;vertical-align:middle}
+.nodep{display:flex;flex-direction:column;gap:6px;font-size:12px}
+.nodep .row2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.nodep .rng{display:flex;flex-direction:column;gap:2px}
+.nodep .seg{display:flex;gap:4px}
+.nodep .seg button{flex:1}
+.btn.danger{background:#3a1622;border-color:#7a2a44;color:#ffb3c6}

@@ -2,8 +2,9 @@
 export const enum M {
   EMPTY, WALL, PWALL, WATER, STEAM, ICE, OIL, SMOKE, LAVA, ROCK, MERCURY, HYDROGEN, HEATER, COOLER,
   SALT, BRINE, OXYGEN, CO2, FIRE, SOOT, IGNITER, ELECTRO, FILTER, SAND, GLASS, HGVAPOR, NITROGEN,
+  GUIDE, MOVER, PROCESSOR, ACTIVATOR, COMPOSITE, SOLVENT, SOLVAPOR, EXTRACT, LOADED,
 }
-export const MAT_COUNT = 27;
+export const MAT_COUNT = 36;
 
 export type Kind = 'none' | 'static' | 'liquid' | 'gas' | 'powder' | 'device';
 export interface MatDef {
@@ -41,20 +42,60 @@ MATS[M.FILTER] = D('選択膜', 99, 'device', 0, [120, 255, 160], 20, 0.2, '装�
 MATS[M.SAND] = D('砂', 6, 'powder', 0, [214, 190, 120], 20, 0.1, '粉体', '1400℃でガラスになる。');
 MATS[M.GLASS] = D('ガラス', 99, 'static', 0, [170, 230, 230], 20, 0.1, '固体', '透明な固体。');
 MATS[M.HGVAPOR] = D('水銀蒸気', -1.5, 'gas', 3, [170, 150, 210], 370, 0.05, '気体', '340℃以下で水銀に戻る。');
+MATS[M.GUIDE] = D('ガイド', 99, 'static', 0, [90, 110, 150], 20, 0, '機械', '流体は素通りし、可動壁だけを止める。');
+MATS[M.MOVER] = D('可動壁', 99, 'static', 0, [150, 200, 230], 20, 0.01, '機械', 'モーターで動く壁。流体を押しのける。');
+MATS[M.PROCESSOR] = D('循環装置', 99, 'device', 0, [255, 140, 220], 20, 0.2, '装置', '左が主入口、右が主出口、下が補助ポートの処理装置。', 0.4);
+MATS[M.ACTIVATOR] = D('活性剤', 4.5, 'powder', 0, [255, 120, 160], 20, 0.3, '粉体', '晶塩と反応して複合結晶を作る架空の材料。');
+MATS[M.COMPOSITE] = D('複合結晶', 7.5, 'powder', 0, [190, 140, 255], 20, 0.3, '粉体', '晶塩＋活性剤から生まれる重い結晶。加熱で再生できる。', 0.15);
+MATS[M.SOLVENT] = D('揮発溶媒', 3, 'liquid', 6, [140, 230, 200], 20, 0.2, '液体', '65℃で蒸発し、55℃以下で凝縮する低沸点の液体。');
+MATS[M.SOLVAPOR] = D('溶媒蒸気', -2.5, 'gas', 3, [170, 240, 220], 70, 0.01, '気体', '55℃以下で揮発溶媒に戻る。');
+MATS[M.EXTRACT] = D('抽出液', 6, 'liquid', 3, [240, 110, 60], 20, 0.15, '液体', '水と混ざらない重い液体。晶塩を運び、回収後に再利用できる。');
+MATS[M.LOADED] = D('晶塩入り抽出液', 6.5, 'liquid', 3, [250, 180, 90], 20, 0.15, '液体', '晶塩を取り込んだ抽出液。回収器で分離できる。');
 MATS[M.NITROGEN] = D('窒素', -1, 'gas', 4, [70, 80, 120], 20, 0.06, '気体', '空気の大部分。反応しない。');
 
 const isMovable = (k: Kind) => k === 'liquid' || k === 'gas' || k === 'powder';
+// 高速化用の物性テーブル
+const KCODE: Record<Kind, number> = { none: 0, static: 1, liquid: 2, gas: 3, powder: 4, device: 5 };
+export const DENS = Float32Array.from(MATS, (d) => d.dens);
+export const KIND = Uint8Array.from(MATS, (d) => KCODE[d.kind]);
+export const SPREAD = Uint8Array.from(MATS, (d) => d.spread);
+export const COND = Float32Array.from(MATS, (d) => d.cond);
+export const CH = 16; // チャンク（休眠判定）の大きさ
 
-export interface Pump { ax: number; ay: number; bx: number; by: number; rate: number; moved: number }
+export interface Pump { ax: number; ay: number; bx: number; by: number; rate: number; moved: number; r?: number }
+
+export const PROCESS_MODES = ['electrolysis', 'combustion', 'condensation', 'crystallization', 'regeneration', 'extraction', 'recovery'] as const;
+export type ProcessMode = typeof PROCESS_MODES[number];
+/** FluidLab の7方式の循環装置（左=主入口、右=主出口、下=補助） */
+export const PROCESSES: Record<ProcessMode, { name: string; sym: string; desc: string }> = {
+  electrolysis: { name: '電解槽', sym: 'EL', desc: '主入口の水を、水素（主出口）と酸素（補助出口）へ分ける。' },
+  combustion: { name: '着火燃焼器', sym: 'FL', desc: '主入口の水素と補助入口の酸素を燃やし、主出口へ水蒸気を出す。' },
+  condensation: { name: '凝縮器', sym: 'CD', desc: '主入口の水蒸気から熱を除き、主出口へ20℃の水を戻す。' },
+  crystallization: { name: '結晶反応器', sym: 'CR', desc: '主入口の晶塩と補助入口の活性剤を混ぜ、主出口に複合結晶を作る。' },
+  regeneration: { name: '結晶再生器', sym: 'RG', desc: '主入口の複合結晶を加熱し、主出口の晶塩と補助出口の活性剤に戻す。' },
+  extraction: { name: '抽出器', sym: 'EX', desc: '主入口の塩水から晶塩を取り込み、補助入口の抽出液とともに主出口へ。水は元の槽に残る。' },
+  recovery: { name: '回収器', sym: 'RC', desc: '主入口の晶塩入り抽出液を、主出口の晶塩と補助出口の抽出液に分ける。' },
+};
+export interface Processor { x: number; y: number; size: number; mode: ProcessMode; rate: number; count: number; status: string }
 
 export class Sim {
   readonly w: number; readonly h: number; readonly n: number;
   t: Uint8Array; temp: Float32Array; aux: Uint8Array; stamp: Uint8Array; noise: Uint8Array;
   pumps: Pump[] = [];
+  processors: Processor[] = [];
   frame = 0;
+  readonly cw: number; readonly chh: number;
+  /** チャンクごとの活動カウンタ（0で休眠） */
+  active: Uint8Array; heatAct: Uint8Array;
+  /** 直近ステップで計算したチャンク数（性能表示用） */
+  awakeChunks = 0;
   ambient = 20;
+  /** 解像度倍率に合わせた熱伝導の補正（S倍のセルでも論理的な熱の伝わり方を保つ） */
+  heatK = 1;
+  /** 横への広がりの補正（解像度倍率） */
+  spreadK = 1;
   /** 反応カウンタ（ゲーム・テスト用） */
-  stats = { burned: 0, dissolved: 0, crystallized: 0, split: 0 };
+  stats = { burned: 0, dissolved: 0, crystallized: 0, split: 0, synthesized: 0, regenerated: 0, extracted: 0, recovered: 0 };
   private rnd: () => number;
   rnd01() { return this.rnd(); }
 
@@ -62,34 +103,57 @@ export class Sim {
     this.w = w; this.h = h; this.n = w * h;
     this.t = new Uint8Array(this.n); this.temp = new Float32Array(this.n).fill(20);
     this.aux = new Uint8Array(this.n); this.stamp = new Uint8Array(this.n); this.noise = new Uint8Array(this.n);
+    this.cw = Math.ceil(w / CH); this.chh = Math.ceil(h / CH);
+    this.active = new Uint8Array(this.cw * this.chh).fill(4); this.heatAct = new Uint8Array(this.cw * this.chh).fill(4);
     let s = seed >>> 0 || 1;
     this.rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 4294967296; };
     for (let i = 0; i < this.n; i++) this.noise[i] = (this.rnd() * 24) | 0;
   }
-  clear() { this.t.fill(0); this.temp.fill(this.ambient); this.aux.fill(0); this.pumps = []; }
+  clear() { this.t.fill(0); this.temp.fill(this.ambient); this.aux.fill(0); this.pumps = []; this.processors = []; this.wakeAll(); }
+  /** 装置を含むチャンクは常に起こしておく */
+  pinned!: Uint8Array;
+  scanPins() {
+    const p = this.pinned ?? (this.pinned = new Uint8Array(this.active.length)); p.fill(0);
+    const { t, w } = this;
+    for (let i = 0; i < this.n; i++) if (KIND[t[i]] === 5) { const c = (((i / w) | 0) / CH | 0) * this.cw + (((i % w) / CH) | 0); if (!p[c]) { p[c] = 1; this.active[c] = 4; this.heatAct[c] = 4; } }
+  }
+  wakeAll() { this.active.fill(4); this.heatAct.fill(4); }
+  /** セル i の周辺チャンクを起こす */
+  wake(i: number) {
+    const x = i % this.w, y = (i / this.w) | 0;
+    const cx = (x / CH) | 0, cy = (y / CH) | 0, cw = this.cw;
+    const c = cy * cw + cx;
+    this.active[c] = 4; this.heatAct[c] = 4;
+    const lx = x - cx * CH, ly = y - cy * CH;
+    if (lx <= 2 && cx > 0) { this.active[c - 1] = 4; this.heatAct[c - 1] = 4; }
+    if (lx >= CH - 3 && cx < cw - 1) { this.active[c + 1] = 4; this.heatAct[c + 1] = 4; }
+    if (ly <= 2 && cy > 0) { this.active[c - cw] = 4; this.heatAct[c - cw] = 4; }
+    if (ly >= CH - 3 && cy < this.chh - 1) { this.active[c + cw] = 4; this.heatAct[c + cw] = 4; }
+  }
   idx(x: number, y: number) { return y * this.w + x; }
   inside(x: number, y: number) { return x >= 0 && y >= 0 && x < this.w && y < this.h; }
   get(x: number, y: number) { return this.inside(x, y) ? this.t[y * this.w + x] : M.WALL; }
   set(x: number, y: number, m: number, aux = 0) {
     if (!this.inside(x, y)) return;
-    const i = y * this.w + x; this.t[i] = m; this.temp[i] = MATS[m].temp; this.aux[i] = aux;
+    const i = y * this.w + x; this.t[i] = m; this.temp[i] = MATS[m].temp; this.aux[i] = aux; this.wake(i);
   }
   count(m: number) { let c = 0; for (let i = 0; i < this.n; i++) if (this.t[i] === m) c++; return c; }
 
-  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })) }; }
-  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); }
+  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })), processors: this.processors.map((p) => ({ ...p })) }; }
+  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); this.processors = s.processors.map((p) => ({ ...p })); this.wakeAll(); }
 
   private canEnter(m: number, o: number, down: boolean) {
     if (o === M.EMPTY) return true;
-    const od = MATS[o];
-    if (od.kind !== 'liquid' && od.kind !== 'gas') return false;
-    return down ? MATS[m].dens > od.dens : MATS[m].dens < od.dens;
+    const k = KIND[o];
+    if (k !== 2 && k !== 3) return false;
+    return down ? DENS[m] > DENS[o] : DENS[m] < DENS[o];
   }
   private swap(i: number, j: number) {
     const t = this.t, tp = this.temp, f = this.frame;
     const a = t[i]; t[i] = t[j]; t[j] = a;
     const b = tp[i]; tp[i] = tp[j]; tp[j] = b;
     this.stamp[j] = f; this.stamp[i] = f;
+    this.wake(i); this.wake(j);
   }
   /** 選択膜を通り抜ける：i から方向 d に進み、膜の先の空きへ移動 */
   private tunnel(i: number, d: number, m: number): boolean {
@@ -104,24 +168,41 @@ export class Sim {
     return false;
   }
 
+  /** 機構（モーター・可動壁）のフック */
+  beforeStep?: () => void;
+
   step() {
     this.frame = ((this.frame + 1) & 255) || 1;
+    this.beforeStep?.();
     this.move();
     this.react();
     this.runPumps();
+    this.runProcessors();
+    if ((this.frame & 31) === 1) this.scanPins();
+    const pin = this.pinned;
+    for (let c = 0; c < this.active.length; c++) { if (pin[c]) continue; if (this.active[c]) this.active[c]--; if (this.heatAct[c]) this.heatAct[c]--; }
   }
 
   private move() {
     const { t, w, h } = this; const f = this.frame;
     const ltr = (f & 1) === 0;
+    const cw = this.cw, act = this.active;
+    let awake = 0;
     for (let y = h - 1; y >= 0; y--) {
+      const crow = ((y / CH) | 0) * cw;
       for (let k = 0; k < w; k++) {
         const x = ltr ? k : w - 1 - k;
+        if ((x & (CH - 1)) === (ltr ? 0 : CH - 1) || k === 0) {
+          // チャンクの先頭：休眠中なら丸ごと飛ばす
+          if (!act[crow + ((x / CH) | 0)]) { const skip = ltr ? CH - 1 - (x & (CH - 1)) : (x & (CH - 1)); k += skip; continue; }
+          if ((y & (CH - 1)) === 0) awake++;
+        }
         const i = y * w + x;
         const m = t[i];
         if (m <= M.PWALL || this.stamp[i] === f) continue;
+        const kd = KIND[m];
+        if (kd < 2 || kd > 4) continue;
         const def = MATS[m];
-        if (!isMovable(def.kind)) continue;
         const dy = def.dens > 0 ? 1 : -1;
         const ny = y + dy;
         // 気体はときどき横に揺らぐ
@@ -141,22 +222,23 @@ export class Sim {
             const nx = x + sx;
             if (nx < 0 || nx >= w) continue;
             const jj = ny * w + nx;
-            if (this.canEnter(m, t[jj], dy > 0) && (t[i + sx] === M.EMPTY || MATS[t[i + sx]].kind === 'gas' || MATS[t[i + sx]].kind === 'liquid')) { this.swap(i, jj); moved = true; }
+            if (this.canEnter(m, t[jj], dy > 0) && (t[i + sx] === M.EMPTY || KIND[t[i + sx]] === 3 || KIND[t[i + sx]] === 2)) { this.swap(i, jj); moved = true; }
           }
           if (moved) continue;
         }
         if (def.kind === 'powder') continue;
         const dir = this.rnd() < 0.5 ? 1 : -1;
         let best = -1;
-        for (let d = 1; d <= def.spread; d++) {
+        const spr = def.spread * this.spreadK;
+        for (let d = 1; d <= spr; d++) {
           const nx = x + dir * d;
           if (nx < 0 || nx >= w) break;
           const j = y * w + nx;
           const o = t[j];
-          if (o === M.EMPTY || (def.kind === 'liquid' && MATS[o].kind === 'gas')) best = j;
-          else if (def.kind === 'gas' && MATS[o].kind === 'gas' && MATS[o].dens > def.dens + 1) { best = j; break; }
+          if (o === M.EMPTY || (kd === 2 && KIND[o] === 3)) best = j;
+          else if (kd === 3 && KIND[o] === 3 && DENS[o] > def.dens + 1) { best = j; break; }
           // 重い液体は軽い液体の下へ横からも潜り込む
-          else if (def.kind === 'liquid' && MATS[o].kind === 'liquid' && MATS[o].dens < def.dens && (ny < 0 || ny >= h || t[i + dy * w] !== M.EMPTY) && this.rnd() < 0.5) { best = j; break; }
+          else if (kd === 2 && KIND[o] === 2 && DENS[o] < def.dens && (ny < 0 || ny >= h || t[i + dy * w] !== M.EMPTY) && this.rnd() < 0.5) { best = j; break; }
           else { if (d === 1 && o === M.FILTER) this.tunnel(i, dir, m); break; }
           const below = ny >= 0 && ny < h ? t[j + dy * w] : M.WALL;
           if (below === M.EMPTY) break;
@@ -164,6 +246,7 @@ export class Sim {
         if (best >= 0 && this.stamp[i] !== f) this.swap(i, best);
       }
     }
+    this.awakeChunks = awake;
   }
 
   private emptyNear(i: number): number {
@@ -180,16 +263,30 @@ export class Sim {
     // 半径2まで探す（炎の伝播を速くする）
     const c = [i - 2 * w, i + 2 * w, i - 2, i + 2, i - w - 1, i - w + 1, i + w - 1, i + w + 1];
     for (const j of c) if (j >= 0 && j < this.n && t[j] === m) return j;
+    // 高解像度では探索半径も広げる
+    const R = 2 * this.spreadK;
+    if (R > 2) {
+      const x = i % w, y = (i / w) | 0;
+      for (let r = 3; r <= R; r++) for (let k = 0; k < 6; k++) {
+        const a = this.rnd() * 6.283, xx = x + Math.round(Math.cos(a) * r), yy = y + Math.round(Math.sin(a) * r);
+        if (xx >= 0 && yy >= 0 && xx < w && yy < this.h && t[yy * w + xx] === m) return yy * w + xx;
+      }
+    }
     return -1;
   }
 
   private react() {
     const { t, temp: tp, w, h } = this;
     const amb = this.ambient;
+    const cw = this.cw, ha = this.heatAct, act = this.active;
+    const hk = this.heatK, ihk = 1 / hk;
     for (let y = 1; y < h - 1; y++) {
+      const crow = ((y / CH) | 0) * cw;
       for (let x = 1; x < w - 1; x++) {
+        const c = crow + ((x / CH) | 0);
+        if (!ha[c] && !act[c]) { x = Math.min(w - 2, (((x / CH) | 0) + 1) * CH - 1); continue; }
         const i = y * w + x; const m = t[i];
-        if (m === M.WALL || m === M.PWALL || m === M.GLASS) continue;
+        if (m === M.WALL || m === M.PWALL || m === M.GLASS || m === M.GUIDE || m === M.MOVER) continue;
         const def = MATS[m];
         if (m === M.HEATER || m === M.COOLER || m === M.IGNITER) { tp[i] = def.temp; continue; }
         let avg: number;
@@ -203,14 +300,26 @@ export class Sim {
           if (t[i + w] > M.PWALL) { sum += tp[i + w]; c++; }
           avg = c ? (sum + tp[i] * (4 - c)) * 0.25 : tp[i];
         }
-        let v = tp[i] + (avg - tp[i]) * def.cond * (m === M.EMPTY ? 0.3 : 0.5);
-        v += (amb - v) * (m === M.EMPTY ? 0.08 : m === M.STEAM ? 0.0006 : m === M.LAVA ? 0.00005 : m === M.FIRE ? 0.001 : 0.004);
+        let v = tp[i] + (avg - tp[i]) * Math.min(1, def.cond * (m === M.EMPTY ? 0.3 : 0.5) * hk);
+        v += (amb - v) * (m === M.EMPTY ? 0.08 : (m === M.STEAM ? 0.0006 : m === M.LAVA ? 0.00005 : m === M.FIRE ? 0.001 : 0.004) * ihk);
+        const dv = v - tp[i];
         tp[i] = v;
+        if (dv > 0.01 || dv < -0.01) ha[c] = 4;
         if (m === M.EMPTY) continue;
         // ランダムな隣接セル1つ
         const r = (this.rnd() * 4) | 0;
         const j = r === 0 ? i - w : r === 1 ? i + w : r === 2 ? i - 1 : i + 1;
         const o = t[j];
+        this.react1(i, j, m, o, v);
+        if (t[i] !== m || t[j] !== o || tp[i] !== v) { this.wake(i); this.wake(j); }
+      }
+    }
+  }
+
+  private react1(i: number, j: number, m: number, o: number, v: number) {
+    const { t, temp: tp } = this;
+    {
+      {
         switch (m) {
           case M.WATER:
             if (v >= 100) t[i] = M.STEAM; else if (v <= 0) t[i] = M.ICE;
@@ -221,6 +330,14 @@ export class Sim {
             else if (v <= -10) t[i] = M.ICE;
             break;
           case M.STEAM: if (v < 70) t[i] = M.WATER; break;
+          case M.ACTIVATOR:
+            if (o === M.BRINE && v < 90) { t[i] = M.COMPOSITE; tp[i] = 55; t[j] = M.WATER; this.stats.synthesized++; }
+            break;
+          case M.COMPOSITE:
+            if (v >= 220) { const e = this.emptyNear(i); if (e >= 0) { t[i] = M.SALT; t[e] = M.ACTIVATOR; tp[e] = v; this.stats.regenerated++; } }
+            break;
+          case M.SOLVENT: if (v >= 65) t[i] = M.SOLVAPOR; break;
+          case M.SOLVAPOR: if (v < 55) t[i] = M.SOLVENT; break;
           case M.ICE: if (v >= 2) t[i] = M.WATER; break;
           case M.OIL:
             if (o === M.IGNITER || o === M.FIRE) tp[i] = Math.max(v, 400);
@@ -274,19 +391,78 @@ export class Sim {
     }
   }
 
+  /** ポート領域（主入口=左、主出口=右、補助=下） */
+  portCells(p: Processor, port: 'in' | 'out' | 'aux'): number[] {
+    const h = p.size >> 1, d = Math.max(2, h), out: number[] = [];
+    for (let a = 1; a <= d; a++) for (let b = -h; b <= h; b++) {
+      const x = port === 'in' ? p.x - h - a : port === 'out' ? p.x + h + a : p.x + b;
+      const y = port === 'aux' ? p.y + h + a : p.y + b;
+      if (this.inside(x, y)) out.push(y * this.w + x);
+    }
+    return out;
+  }
+  private takeAt(cells: number[], m: number, n = 1, used?: Set<number>, deep = 0): number[] {
+    const r: number[] = [];
+    for (const i of cells) { if (this.t[i] === m && !used?.has(i)) { r.push(i); used?.add(i); if (r.length >= n) break; } }
+    if (r.length < n && deep) {
+      // 補助ポートは下に積もった材料を吸い上げる（流体・粉体の柱をたどる）
+      const { t, w } = this;
+      for (const c of cells) {
+        for (let k = 1, j = c + w; k <= deep && j < this.n; k++, j += w) {
+          const kk = KIND[t[j]]; if (t[j] !== M.EMPTY && (kk < 2 || kk > 4)) break;
+          if (t[j] === m && !used?.has(j)) { r.push(j); used?.add(j); break; }
+        }
+        if (r.length >= n) break;
+      }
+    }
+    return r.length >= n ? r : [];
+  }
+  private emptyAt(cells: number[], n: number, used: Set<number>): number[] {
+    const r: number[] = [];
+    for (const i of cells) { if (this.t[i] === M.EMPTY && !used.has(i)) { r.push(i); used.add(i); if (r.length >= n) break; } }
+    return r.length >= n ? r : [];
+  }
+  private runProcessors() {
+    const { t, temp: tp } = this;
+    for (const p of this.processors) {
+      const pin = this.portCells(p, 'in'), pout = this.portCells(p, 'out'), paux = this.portCells(p, 'aux');
+      let done = 0;
+      for (let n = 0; n < p.rate; n++) {
+        const used = new Set<number>();
+        const put = (cells: number[], m: number, temp = 20) => { for (const i of cells) { t[i] = m; tp[i] = temp; this.wake(i); } };
+        const clear = (cells: number[]) => { for (const i of cells) { t[i] = M.EMPTY; this.wake(i); } };
+        let ok = false;
+        switch (p.mode) {
+          case 'electrolysis': { const a = this.takeAt(pin, M.WATER, 2, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.HYDROGEN); put(o2, M.OXYGEN); ok = true; this.stats.split++; } break; }
+          case 'combustion': { const a = this.takeAt(pin, M.HYDROGEN, 1, used), b = this.takeAt(paux, M.OXYGEN, 1, used, 0); const o = this.emptyAt(pout, 2, used); if (a.length && b.length && o.length) { clear(a); clear(b); put(o, M.STEAM, 300); ok = true; this.stats.burned++; } break; }
+          case 'condensation': { const a = this.takeAt(pin, M.STEAM, 1, used); const o = this.emptyAt(pout, 1, used); if (a.length && o.length) { clear(a); put(o, M.WATER); ok = true; } break; }
+          case 'crystallization': { const a = this.takeAt(pin, M.SALT, 1, used), b = this.takeAt(paux, M.ACTIVATOR, 1, used, 40); const o = this.emptyAt(pout, 2, used); if (a.length && b.length && o.length) { clear(a); clear(b); put(o, M.COMPOSITE, 55); ok = true; this.stats.synthesized++; } break; }
+          case 'regeneration': { const a = this.takeAt(pin, M.COMPOSITE, 2, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.SALT, 220); put(o2, M.ACTIVATOR, 220); ok = true; this.stats.regenerated++; } break; }
+          case 'extraction': { const a = this.takeAt(pin, M.BRINE, 1, used), b = this.takeAt(paux, M.EXTRACT, 1, used, 40); const o = this.emptyAt(pout, 1, used); if (a.length && b.length && o.length) { t[a[0]] = M.WATER; this.wake(a[0]); clear(b); put(o, M.LOADED); ok = true; this.stats.extracted++; } break; }
+          case 'recovery': { const a = this.takeAt(pin, M.LOADED, 1, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.SALT); put(o2, M.EXTRACT); ok = true; this.stats.recovered++; } break; }
+        }
+        if (!ok) break;
+        done++;
+      }
+      p.count += done;
+      p.status = done ? '処理中' : '原料不足・出口満杯';
+    }
+  }
+
   private runPumps() {
     const { t, w } = this;
     for (const p of this.pumps) {
+      const R = p.r ?? 2;
       for (let n = 0; n < p.rate; n++) {
         let src = -1, dst = -1;
         for (let k = 0; k < 12 && src < 0; k++) {
-          const x = p.ax + ((this.rnd() * 5) | 0) - 2, y = p.ay + ((this.rnd() * 5) | 0) - 2;
+          const x = p.ax + ((this.rnd() * (2 * R + 1)) | 0) - R, y = p.ay + ((this.rnd() * (2 * R + 1)) | 0) - R;
           if (!this.inside(x, y)) continue;
           const i = y * w + x;
           if (isMovable(MATS[t[i]].kind)) src = i;
         }
         for (let k = 0; k < 12 && dst < 0; k++) {
-          const x = p.bx + ((this.rnd() * 5) | 0) - 2, y = p.by + ((this.rnd() * 5) | 0) - 2;
+          const x = p.bx + ((this.rnd() * (2 * R + 1)) | 0) - R, y = p.by + ((this.rnd() * (2 * R + 1)) | 0) - R;
           if (!this.inside(x, y)) continue;
           const i = y * w + x;
           if (t[i] === M.EMPTY) dst = i;
