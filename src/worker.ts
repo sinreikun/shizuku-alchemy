@@ -28,7 +28,7 @@ function state(): GameState {
     flowing: g.flowing, won: g.won, ticks: g.ticks, canUndo: g.canUndo, canRedo: g.canRedo, pendingPump: g.pendingPump,
     pumps: s.pumps.map((p) => ({ ax: p.ax, ay: p.ay, bx: p.bx, by: p.by, uid: p.uid ?? 0, name: p.name ?? '' })),
     devices: g.devices.map((d) => ({ uid: d.uid ?? 0, name: d.name ?? '', kind: d.kind, x: d.x, y: d.y })),
-    tree: g.tree(), maxAmp: g.maxAmp(),
+    voids: g.voids.map((v) => ({ ...v })), tree: g.tree(), maxAmp: g.maxAmp(),
     procs: s.processors.map((p) => ({ x: p.x, y: p.y, size: p.size, mode: p.mode, count: p.count, status: p.status, uid: p.uid ?? 0, name: p.name ?? '', moved: !!p.ports, ports: (['in', 'out', 'aux'] as PortName[]).map((pn) => portOffset(p, pn)) })),
     nodes, cost: g.cost(), sourcesLeft: g.sourcesLeft, brush: g.brush, filterMat: g.filterMat, stalls: g.mech.stalls,
     simMs, awake: s.awakeChunks, chunks: s.cw * s.chh,
@@ -41,7 +41,7 @@ const enc = (a: Uint8Array) => { let str = ''; for (let i = 0; i < a.length; i +
 const dec = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
 function serialize() {
   const g = game!, s = g.sim;
-  return JSON.stringify({ app: 'shizuku-alchemy', v: 5, lw: s.w / g.S, lh: s.h / g.S, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, seq: g.seq, nextUid: g.nextUid });
+  return JSON.stringify({ app: 'shizuku-alchemy', v: 5, lw: s.w / g.S, lh: s.h / g.S, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, voids: g.voids, seq: g.seq, nextUid: g.nextUid });
 }
 function deserialize(json: string) {
   const d = JSON.parse(json);
@@ -66,6 +66,7 @@ function deserialize(json: string) {
   s.pumps = (d.pumps ?? []).map((p: { ax: number; ay: number; bx: number; by: number; rate: number; r?: number }) => ({ ...p, ax: p.ax * k, ay: p.ay * k, bx: p.bx * k, by: p.by * k, rate: p.rate * k, r: (p.r ?? 2) * k, moved: 0 }));
   s.processors = (d.processors ?? []).map((p: object) => ({ ...p }));
   g.devices = (d.devices ?? []).map((v: { x: number; y: number }) => ({ ...v, x: v.x * k, y: v.y * k }));
+  g.voids = (d.voids ?? []).map((v: object) => ({ ...v }));
   g.mech.load(d.nodes ?? []);
   // v4：名前の通し番号。旧版は名前を付け直す
   g.seq = { ...(d.seq ?? {}) }; g.nextUid = d.nextUid ?? 1;
@@ -103,6 +104,8 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   resizeLab: (lw: number, lh: number, ax: number, ay: number) => { const old = game!; if (!old.sandbox) return false; game = hook(resizeLab(old, labLevel(lw, lh), ax, ay, seed)); return { w: game.sim.w, h: game.sim.h }; },
   setEraseFilter: (mats: number[] | null, objs: Record<string, boolean>) => { game!.setEraseFilter(mats, objs); return true; },
   eraseRegion: (poly: number[]) => game!.eraseRegion(poly),
+  addVoid: (x0: number, y0: number, x1: number, y1: number) => game!.addVoid(x0, y0, x1, y1)?.uid ?? 0,
+  removeVoid: (uid: number) => game!.removeVoid(uid),
   reparent: (id: number, parent: number) => game!.reparent(id, parent),
   /** テスト用：勝つまで（または上限まで）一気に進める */
   run: (limit: number) => { const g = game!; g.start(); const t0 = performance.now(); while (!g.won && g.ticks < limit) g.tick(); return { won: g.won, ticks: g.ticks, ms: performance.now() - t0, cost: g.cost() }; },

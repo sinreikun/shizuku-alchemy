@@ -15,7 +15,7 @@ export interface GameState {
   flowing: boolean; won: boolean; ticks: number; canUndo: boolean; canRedo: boolean;
   pendingPump: { x: number; y: number } | null;
   pumps: { ax: number; ay: number; bx: number; by: number; uid: number; name: string }[];
-  devices: DeviceView[]; tree: TreeItem[]; maxAmp: number;
+  devices: DeviceView[]; voids: { uid: number; name: string; x: number; y: number; w: number; h: number }[]; tree: TreeItem[]; maxAmp: number;
   procs: ProcView[]; nodes: NodeView[];
   cost: number; sourcesLeft: number; brush: number; filterMat: number; stalls: number;
   simMs: number; awake: number; chunks: number;

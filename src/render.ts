@@ -67,4 +67,10 @@ export function paint(s: Sim, px: Uint32Array, gpx: Uint32Array, viewMode: ViewM
     px[i] = 0xff000000 | (clamp(b) << 16) | (clamp(g) << 8) | clamp(r);
     gpx[i] = gl > 0 ? ((clamp(255 * gl) << 24) | (clamp(b) << 16) | (clamp(g) << 8) | clamp(r)) : 0;
   }
+  if (s.hideEdge) {
+    // 外周（見えない境界）は背景色で塗る
+    const { w, h } = s, c = 0xff1a0f0c;
+    for (let x = 0; x < w; x++) { px[x] = c; px[(h - 1) * w + x] = c; gpx[x] = 0; gpx[(h - 1) * w + x] = 0; }
+    for (let y = 0; y < h; y++) { px[y * w] = c; px[y * w + w - 1] = c; gpx[y * w] = 0; gpx[y * w + w - 1] = 0; }
+  }
 }

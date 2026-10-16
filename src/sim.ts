@@ -158,6 +158,8 @@ export class Sim {
     if (ly >= CH - 3 && cy < this.chh - 1) { this.active[c + cw] = 4; this.heatAct[c + cw] = 4; }
   }
   idx(x: number, y: number) { return y * this.w + x; }
+  /** 外周1セルを見えない境界として描く（自由実験室） */
+  hideEdge = false;
   inside(x: number, y: number) { return x >= 0 && y >= 0 && x < this.w && y < this.h; }
   get(x: number, y: number) { return this.inside(x, y) ? this.t[y * this.w + x] : M.WALL; }
   set(x: number, y: number, m: number, aux = 0) {
