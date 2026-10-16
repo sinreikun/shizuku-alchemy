@@ -17,6 +17,8 @@ export interface MechNode {
   w: number; h: number; r: number;
   /** 形の中心（自分の座標系）。板は根元が関節で、中心は板の中ほど */
   bx: number; by: number;
+  /** 自動で付く名前（例：ピストン#2）。保存され、消しても番号は再利用しない */
+  name?: string;
 }
 export interface Pose { x: number; y: number; a: number }
 
@@ -74,6 +76,8 @@ export class Mech {
   }
 
   // ---------- 姿勢 ----------
+  /** 親 p の子が乗る座標系（世界座標） */
+  frameOf(p: MechNode): Pose { return this.childFrame(p, this.pose(p.id)!); }
   private childFrame(p: MechNode, P: Pose): Pose {
     if (p.type === 'rotor') return { x: P.x, y: P.y, a: P.a + p.angle };
     if (p.type === 'piston') { const L = p.ext * p.amp; return { x: P.x + Math.cos(P.a) * L, y: P.y + Math.sin(P.a) * L, a: P.a }; }
@@ -123,8 +127,8 @@ export class Mech {
     }
     return out;
   }
-  private isBody(n: MechNode) { return n.type === 'rect' || n.type === 'circle'; }
-  private hitsGuide(): MechNode | null {
+  isBody(n: MechNode) { return n.type === 'rect' || n.type === 'circle'; }
+  hitsGuide(): MechNode | null {
     const t = this.sim.t;
     for (const n of this.nodes) {
       if (!this.isBody(n)) continue;

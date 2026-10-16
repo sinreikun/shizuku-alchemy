@@ -62,7 +62,7 @@ export const SPREAD = Uint8Array.from(MATS, (d) => d.spread);
 export const COND = Float32Array.from(MATS, (d) => d.cond);
 export const CH = 16; // チャンク（休眠判定）の大きさ
 
-export interface Pump { ax: number; ay: number; bx: number; by: number; rate: number; moved: number; r?: number }
+export interface Pump { ax: number; ay: number; bx: number; by: number; rate: number; moved: number; r?: number; uid?: number; name?: string }
 
 export const PROCESS_MODES = ['electrolysis', 'combustion', 'condensation', 'crystallization', 'regeneration', 'extraction', 'recovery'] as const;
 export type ProcessMode = typeof PROCESS_MODES[number];
@@ -76,7 +76,34 @@ export const PROCESSES: Record<ProcessMode, { name: string; sym: string; desc: s
   extraction: { name: '抽出器', sym: 'EX', desc: '主入口の塩水から晶塩を取り込み、補助入口の抽出液とともに主出口へ。水は元の槽に残る。' },
   recovery: { name: '回収器', sym: 'RC', desc: '主入口の晶塩入り抽出液を、主出口の晶塩と補助出口の抽出液に分ける。' },
 };
-export interface Processor { x: number; y: number; size: number; mode: ProcessMode; rate: number; count: number; status: string }
+export type PortName = 'in' | 'out' | 'aux';
+export const PORT_NAMES: Record<PortName, string> = { in: '入口', out: '出口', aux: '補助口' };
+export interface Processor {
+  x: number; y: number; size: number; mode: ProcessMode; rate: number; count: number; status: string;
+  uid?: number; name?: string;
+  /** 動かしたポートの中心（装置中心からのずれ）。[入口dx,dy, 出口dx,dy, 補助dx,dy]。未指定は既定の位置 */
+  ports?: number[];
+}
+const PORT_IX: Record<PortName, number> = { in: 0, out: 2, aux: 4 };
+/** ポートの既定の中心（装置中心からのずれ） */
+export function defaultPortOffset(size: number, port: PortName): [number, number] {
+  const h = size >> 1, d = Math.max(2, h), c = h + (d + 1) / 2;
+  return port === 'in' ? [-c, 0] : port === 'out' ? [c, 0] : [0, c];
+}
+export function portOffset(p: Processor, port: PortName): [number, number] {
+  if (p.ports) { const k = PORT_IX[port]; return [p.ports[k], p.ports[k + 1]]; }
+  return defaultPortOffset(p.size, port);
+}
+/** ポートを置ける位置に収める：装置に重ならず、中心から半径 4×大きさ 以内 */
+export function clampPortOffset(size: number, dx: number, dy: number): [number, number] {
+  const h = size >> 1, d = Math.max(2, h), R = size * 4;
+  dx = Math.round(Math.max(-R, Math.min(R, dx))); dy = Math.round(Math.max(-R, Math.min(R, dy)));
+  const minC = h + (d + 1) / 2;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < minC) {
+    if (Math.abs(dx) >= Math.abs(dy)) dx = (dx < 0 ? -1 : 1) * Math.ceil(minC); else dy = (dy < 0 ? -1 : 1) * Math.ceil(minC);
+  }
+  return [dx, dy];
+}
 
 export class Sim {
   readonly w: number; readonly h: number; readonly n: number;
@@ -139,8 +166,8 @@ export class Sim {
   }
   count(m: number) { let c = 0; for (let i = 0; i < this.n; i++) if (this.t[i] === m) c++; return c; }
 
-  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })), processors: this.processors.map((p) => ({ ...p })) }; }
-  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); this.processors = s.processors.map((p) => ({ ...p })); this.wakeAll(); }
+  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })), processors: this.processors.map((p) => ({ ...p, ports: p.ports?.slice() })) }; }
+  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); this.processors = s.processors.map((p) => ({ ...p, ports: p.ports?.slice() })); this.wakeAll(); }
 
   private canEnter(m: number, o: number, down: boolean) {
     if (o === M.EMPTY) return true;
@@ -392,8 +419,21 @@ export class Sim {
   }
 
   /** ポート領域（主入口=左、主出口=右、補助=下） */
-  portCells(p: Processor, port: 'in' | 'out' | 'aux'): number[] {
+  portCells(p: Processor, port: PortName): number[] {
     const h = p.size >> 1, d = Math.max(2, h), out: number[] = [];
+    if (p.ports) {
+      // 動かしたポート：装置から見た向きで、既定と同じ大きさの帯を置く
+      const [dx, dy] = portOffset(p, port), cx = Math.round(p.x + dx), cy = Math.round(p.y + dy);
+      const horiz = Math.abs(dx) >= Math.abs(dy), hw = horiz ? d / 2 : h, hh = horiz ? h : d / 2;
+      for (let y = Math.ceil(cy - hh - 0.01); y <= Math.floor(cy + hh); y++) for (let x = Math.ceil(cx - hw - 0.01); x <= Math.floor(cx + hw); x++) {
+        if (!this.inside(x, y)) continue;
+        const i = y * this.w + x, m = this.t[i]; if (m === M.PROCESSOR) continue;
+        out.push(i);
+      }
+      // 装置に近い順に並べる（既定の並びと同じ考え方）
+      out.sort((a, b) => Math.hypot((a % this.w) - p.x, ((a / this.w) | 0) - p.y) - Math.hypot((b % this.w) - p.x, ((b / this.w) | 0) - p.y));
+      return out;
+    }
     for (let a = 1; a <= d; a++) for (let b = -h; b <= h; b++) {
       const x = port === 'in' ? p.x - h - a : port === 'out' ? p.x + h + a : p.x + b;
       const y = port === 'aux' ? p.y + h + a : p.y + b;

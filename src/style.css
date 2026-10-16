@@ -78,3 +78,15 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .nodep .seg{display:flex;gap:4px}
 .nodep .seg button{flex:1}
 .btn.danger{background:#3a1622;border-color:#7a2a44;color:#ffb3c6}
+/* v6：配置物ツリー */
+.tree{max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:1px;font-size:12px}
+.trow{display:flex;align-items:center;gap:4px;padding:3px 6px 3px calc(6px + var(--d) * 14px);border-radius:6px;cursor:pointer;white-space:nowrap}
+.trow:hover{background:#ffffff10}
+.trow.on{background:#3a5bff44;outline:1px solid #8fa8ff}
+.trow .tw{width:12px;color:#9aa3c7;text-align:center}
+.trow .ti{width:16px;text-align:center}
+.trow .tn{overflow:hidden;text-overflow:ellipsis}
+.trow .ts{margin-left:auto;font-size:10px;color:#9aa3c7;background:#ffffff0d;padding:0 5px;border-radius:6px}
+.nodep .ports{display:flex;flex-wrap:wrap;gap:4px}
+.nodep .num{width:100%;background:#0d1020;color:#fff;border:1px solid #333a5a;border-radius:6px;padding:2px 4px}
+@media (pointer:coarse){.trow{padding-top:7px;padding-bottom:7px}}

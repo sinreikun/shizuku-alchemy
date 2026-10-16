@@ -57,14 +57,15 @@
         <div id="toast" class="toast"></div>
       </div>
       <aside id="side" class="panel side">
-        <section id="nodeBox" style="display:none"><h3>機構の調整</h3><div id="nodePanel" class="nodep"></div></section>
+        <section id="treeBox"><h3>配置したもの <span id="treeCount" class="muted"></span></h3><div id="tree" class="tree"></div></section>
+        <section id="nodeBox" style="display:none"><h3>選択中の調整</h3><div id="nodePanel" class="nodep"></div></section>
         <section id="goalsBox"><h3>目標</h3><div id="goals"></div><div id="flow" class="muted"></div></section>
         <section id="scoreBox"><h3>評価の目安</h3><div id="score" class="score"></div></section>
         <section id="invBox"><h3>手持ち</h3><div id="inv" class="inv"></div></section>
         <section><h3>ブラシ</h3><input id="brush" type="range" min="0" max="17" value="3"><div class="muted" id="brushv"></div></section>
         <section><h3>表示</h3><div class="seg" id="viewmode"><button data-v="mat" class="on">物質</button><button data-v="temp">温度</button><button data-v="glow">発光オフ</button></div></section>
         <section id="labBox"><h3>実験データ</h3><div class="grid2"><button id="save" class="btn">💾 保存</button><button id="load" class="btn">📂 読込</button><button id="export" class="btn">⬇ 書き出し</button><button id="import" class="btn">⬆ 読み込み</button></div><input type="file" id="file" accept=".json" hidden><label class="chk"><input type="checkbox" id="ambient"> 室温を -10℃ に</label></section>
-        <p class="help">左ドラッグ 描く ／ 右ドラッグ 消す<br>ホイール 拡大 ／ Space＋ドラッグ・中ボタン 移動<br>2本指 ピンチ・移動（タッチ）<br>Space 放水 ／ R 流し直し ／ Ctrl+Z 戻す</p>
+        <p class="help">左ドラッグ 描く ／ 右ドラッグ 消す<br>ホイール 拡大 ／ Space＋ドラッグ・中ボタン 移動<br>2本指 ピンチ・移動（タッチ）<br>Space 放水 ／ R 流し直し ／ Ctrl+Z 戻す<br>選択ツール・Shift＋ドラッグ 置いた物を移動</p>
       </aside>
     </div>
   </section>

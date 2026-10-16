@@ -2,7 +2,7 @@
 // 画像バッファは Transferable でメインと往復させる（SharedArrayBuffer 不要）。
 import { Game, SCALE, type Tool } from './game';
 import { LEVELS, SANDBOX } from './levels';
-import { M, MATS, CH } from './sim';
+import { M, MATS, CH, portOffset, type PortName } from './sim';
 import { paint } from './render';
 import type { ToWorker, FromWorker, GameState, NodeView } from './protocol';
 
@@ -18,14 +18,16 @@ function state(): GameState {
   g.mech.computePoses();
   const nodes: NodeView[] = g.mech.nodes.map((n) => {
     const p = g.mech.pose(n.id)!; const tip = n.type === 'piston' ? g.mech.tip(n) : p;
-    return { id: n.id, type: n.type, parent: n.parent, joint: n.joint, on: n.on, speed: n.speed, dir: n.dir, amp: n.amp, recip: n.recip, k: n.k, x: p.x, y: p.y, a: p.a, tx: tip.x, ty: tip.y, bend: n.bend, fixed: g.fixedNodes.has(n.id), w: n.w, h: n.h, r: n.r, bx: n.bx };
+    return { id: n.id, type: n.type, parent: n.parent, joint: n.joint, on: n.on, speed: n.speed, dir: n.dir, amp: n.amp, recip: n.recip, k: n.k, x: p.x, y: p.y, a: p.a, tx: tip.x, ty: tip.y, bend: n.bend, name: n.name ?? '', fixed: g.fixedNodes.has(n.id), w: n.w, h: n.h, r: n.r, bx: n.bx };
   });
   const [hx, hy] = hover;
   return {
     w: s.w, h: s.h, S: g.S, inv: { ...g.inv }, invBase: { ...g.invBase }, progress: [...g.progress], emitted: [...g.emitted],
     flowing: g.flowing, won: g.won, ticks: g.ticks, canUndo: g.canUndo, canRedo: g.canRedo, pendingPump: g.pendingPump,
-    pumps: s.pumps.map((p) => ({ ax: p.ax, ay: p.ay, bx: p.bx, by: p.by })),
-    procs: s.processors.map((p) => ({ x: p.x, y: p.y, size: p.size, mode: p.mode, count: p.count, status: p.status })),
+    pumps: s.pumps.map((p) => ({ ax: p.ax, ay: p.ay, bx: p.bx, by: p.by, uid: p.uid ?? 0, name: p.name ?? '' })),
+    devices: g.devices.map((d) => ({ uid: d.uid ?? 0, name: d.name ?? '', kind: d.kind, x: d.x, y: d.y })),
+    tree: g.tree(), maxAmp: g.maxAmp(),
+    procs: s.processors.map((p) => ({ x: p.x, y: p.y, size: p.size, mode: p.mode, count: p.count, status: p.status, uid: p.uid ?? 0, name: p.name ?? '', moved: !!p.ports, ports: (['in', 'out', 'aux'] as PortName[]).map((pn) => portOffset(p, pn)) })),
     nodes, cost: g.cost(), sourcesLeft: g.sourcesLeft, brush: g.brush, filterMat: g.filterMat, stalls: g.mech.stalls,
     simMs, awake: s.awakeChunks, chunks: s.cw * s.chh,
     hover: s.inside(hx, hy) ? { m: s.t[hy * s.w + hx], temp: s.temp[hy * s.w + hx] } : null,
@@ -37,7 +39,7 @@ const enc = (a: Uint8Array) => { let str = ''; for (let i = 0; i < a.length; i +
 const dec = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
 function serialize() {
   const g = game!, s = g.sim;
-  return JSON.stringify({ app: 'shizuku-alchemy', v: 3, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices });
+  return JSON.stringify({ app: 'shizuku-alchemy', v: 4, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, seq: g.seq, nextUid: g.nextUid });
 }
 function deserialize(json: string) {
   const g = game!, s = g.sim;
@@ -61,6 +63,10 @@ function deserialize(json: string) {
   s.processors = (d.processors ?? []).map((p: object) => ({ ...p }));
   g.devices = (d.devices ?? []).map((v: { x: number; y: number }) => ({ ...v, x: v.x * k, y: v.y * k }));
   g.mech.load(d.nodes ?? []);
+  // v4：名前の通し番号。旧版は名前を付け直す
+  g.seq = { ...(d.seq ?? {}) }; g.nextUid = d.nextUid ?? 1;
+  if (!d.seq) for (const n of g.mech.nodes) delete n.name;
+  g.ensureNames();
   s.wakeAll();
 }
 
@@ -85,6 +91,11 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   cancelPump: () => { game!.pendingPump = null; return true; },
   serialize: () => serialize(),
   deserialize: (json: string) => { deserialize(json); return true; },
+  pickObject: (x: number, y: number) => game!.pickObject(x, y),
+  moveObject: (key: string, dx: number, dy: number) => game!.moveObject(key, dx, dy),
+  setPort: (uid: number, port: PortName, dx: number, dy: number) => game!.setPort(uid, port, dx, dy),
+  resetPorts: (uid: number) => game!.resetPorts(uid),
+  setAmp: (id: number, amp: number) => game!.editNode(id, { amp }),
   /** テスト用：勝つまで（または上限まで）一気に進める */
   run: (limit: number) => { const g = game!; g.start(); const t0 = performance.now(); while (!g.won && g.ticks < limit) g.tick(); return { won: g.won, ticks: g.ticks, ms: performance.now() - t0, cost: g.cost() }; },
   /** テスト用：同じシードの新しい盤面で解答を適用→勝つまで実行（待ち時間やフレーム数に左右されない） */

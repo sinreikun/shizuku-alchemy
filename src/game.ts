@@ -1,6 +1,15 @@
 // ゲーム進行（DOMに依存しない。テスト・Web Worker から使う）
-import { Sim, M, MATS, KIND, PROCESS_MODES, type ProcessMode, type Pump } from './sim';
-import { Mech, newNode, type MechNode } from './mech';
+import { Sim, M, MATS, KIND, PROCESS_MODES, PROCESSES, PORT_NAMES, portOffset, defaultPortOffset, clampPortOffset, type ProcessMode, type Pump, type PortName } from './sim';
+import { Mech, newNode, JOINT_NAMES, type MechNode } from './mech';
+
+/** 置いた物の名前の元になる呼び名 */
+export const OBJ_LABEL: Record<string, string> = {
+  rotor: '回転モーター', piston: 'ピストン', rect: '可動板', circle: '可動円盤',
+  heater: 'ヒーター', cooler: 'クーラー', igniter: '着火器', electro: '簡易電解板', pump: 'ポンプ',
+};
+/** 配置物ツリーの1項目。key は 'n:<機構id>' 'd:<装置uid>' 'p:<ポンプuid>' 'pe:<uid>:a|b' 'port:<uid>:in|out|aux' */
+export interface TreeItem { key: string; name: string; kind: string; sub?: string; fixed?: boolean; children: TreeItem[] }
+const PORTS: PortName[] = ['in', 'out', 'aux'];
 
 /** 解像度倍率：ステージは論理座標で設計し、実セルは SCALE 倍 */
 export const SCALE = 2;
@@ -55,7 +64,7 @@ export interface Level {
   limit?: number;
 }
 
-interface Device { kind: DeviceTool | 'proc'; x: number; y: number; mode?: ProcessMode }
+export interface Device { kind: DeviceTool | 'proc'; x: number; y: number; mode?: ProcessMode; uid?: number; name?: string }
 
 const replaceable = (o: number, sandbox: boolean, devices = false) => {
   if (o === M.EMPTY) return true;
@@ -88,6 +97,10 @@ export class Game {
   pendingPump: { x: number; y: number } | null = null;
   /** 最初から置かれた（消せない）機構 */
   fixedNodes = new Set<number>();
+  /** 種類ごとの通し番号（減らさないので、消しても番号は再利用されない。元に戻すでも巻き戻さない） */
+  seq: Record<string, number> = {};
+  /** 装置・ポンプの通し id */
+  nextUid = 1;
   private undoStack: ReturnType<Game['snap']>[] = [];
   private redoStack: ReturnType<Game['snap']>[] = [];
   onAbsorb?: (x: number, y: number, mat: number) => void;
@@ -195,7 +208,7 @@ export class Game {
     if (tool === 'pump') {
       if (this.inv.pump <= 0) return false;
       if (!this.pendingPump) { this.pendingPump = { x, y }; return true; }
-      s.pumps.push({ ax: this.pendingPump.x, ay: this.pendingPump.y, bx: x, by: y, rate: 3 * S, moved: 0, r: 2 * S });
+      s.pumps.push({ ax: this.pendingPump.x, ay: this.pendingPump.y, bx: x, by: y, rate: 3 * S, moved: 0, r: 2 * S, uid: this.nextUid++, name: this.newName(OBJ_LABEL.pump) });
       this.pendingPump = null; this.inv.pump--; return true;
     }
     if (tool === 'rotor') return !!this.addRotor(x, y);
@@ -212,8 +225,9 @@ export class Game {
       for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) if (!replaceable(s.get(x + i, y + j), this.sandbox, true)) return false;
       const mat = isProc ? M.PROCESSOR : DEVICE_MAT[tool as DeviceTool];
       for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) s.set(x + i, y + j, mat, isProc ? PROCESS_MODES.indexOf(mode!) : 0);
-      if (isProc) s.processors.push({ x: x + (S >> 1), y: y + (S >> 1), size: 3 * S, mode: mode!, rate: 1, count: 0, status: '' });
-      this.devices.push({ kind: isProc ? 'proc' : (tool as DeviceTool), x, y, mode }); this.inv[key]--;
+      const uid = this.nextUid++, name = this.newName(isProc ? PROCESSES[mode!].name : OBJ_LABEL[tool]);
+      if (isProc) s.processors.push({ x: x + (S >> 1), y: y + (S >> 1), size: 3 * S, mode: mode!, rate: 1, count: 0, status: '', uid, name });
+      this.devices.push({ kind: isProc ? 'proc' : (tool as DeviceTool), x, y, mode, uid, name }); this.inv[key]--;
       return true;
     }
     // 自由実験室：物質を塗る
@@ -239,15 +253,15 @@ export class Game {
   }
   addRotor(x: number, y: number) {
     if (this.inv.rotor <= 0) return null;
-    const n = this.mech.add(newNode('rotor', x + 0.5, y + 0.5, { speed: 0.9 }));
+    const n = this.mech.add(newNode('rotor', x + 0.5, y + 0.5, { speed: 0.9, name: this.newName(OBJ_LABEL.rotor) }));
     this.autoParent(n, x, y);
     this.inv.rotor--; this.mech.computePoses(); return n;
   }
   /** ピストン：根元 (x0,y0) から (x1,y1) へ伸びる */
   addPiston(x0: number, y0: number, x1: number, y1: number) {
     if (this.inv.piston <= 0) return null;
-    const amp = Math.max(4 * this.S, Math.min((this.sandbox ? 120 : this.level.maxAmp ?? 120) * this.S, Math.hypot(x1 - x0, y1 - y0)));
-    const n = this.mech.add(newNode('piston', x0 + 0.5, y0 + 0.5, { oa: Math.atan2(y1 - y0, x1 - x0), amp, speed: 0.25 }));
+    const amp = Math.max(4 * this.S, Math.min(this.maxAmp(), Math.hypot(x1 - x0, y1 - y0)));
+    const n = this.mech.add(newNode('piston', x0 + 0.5, y0 + 0.5, { oa: Math.atan2(y1 - y0, x1 - x0), amp, speed: 0.25, name: this.newName(OBJ_LABEL.piston) }));
     this.autoParent(n, x0, y0);
     this.inv.piston--; this.mech.computePoses(); return n;
   }
@@ -265,6 +279,7 @@ export class Game {
   private placeBody(n: MechNode, ax: number, ay: number) {
     const cost = this.sandbox ? 0 : this.mech.bodyCells(n, { x: n.ox, y: n.oy, a: n.oa }).length;
     if (!this.sandbox && cost > this.inv.plate) return null;
+    n.name = this.newName(OBJ_LABEL[n.type]);
     this.mech.add(n);
     this.autoParent(n, ax, ay);
     if (n.parent < 0) { const c = Math.cos(n.oa) * n.bx, d = Math.sin(n.oa) * n.bx; this.autoParent(n, n.ox + c, n.oy + d); }
@@ -296,11 +311,160 @@ export class Game {
       const allow: (keyof MechNode)[] = ['dir', 'joint', 'on'];
       for (const k of Object.keys(patch) as (keyof MechNode)[]) if (!allow.includes(k)) delete patch[k];
     }
+    if (patch.amp !== undefined) {
+      if (n.type !== 'piston') delete patch.amp;
+      else patch.amp = Math.max(4 * this.S, Math.min(this.maxAmp(), Number(patch.amp) || 0));
+    }
+    const prev = new Map(this.mech.computePoses());
     Object.assign(n, patch);
     if (patch.parent !== undefined) return true;
+    if (patch.amp !== undefined) { this.mech.computePoses(); this.mech.rasterize(prev); return true; }
     this.mech.computePoses(); this.mech.rasterize();
     return true;
   }
+
+  /** ピストンの最大ストローク（実セル） */
+  maxAmp() { return (this.sandbox ? 120 : this.level.maxAmp ?? 120) * this.S; }
+  newName(label: string) { const k = (this.seq[label] ?? 0) + 1; this.seq[label] = k; return `${label}#${k}`; }
+  /** 名前・uid のない物（旧い保存データ）に付け直す */
+  ensureNames() {
+    const S = this.S;
+    for (const n of this.mech.nodes) if (!n.name) n.name = this.newName(OBJ_LABEL[n.type]);
+    for (const d of this.devices) {
+      if (d.uid === undefined) d.uid = this.nextUid++;
+      if (!d.name) d.name = this.newName(d.kind === 'proc' ? PROCESSES[d.mode ?? 'electrolysis'].name : OBJ_LABEL[d.kind]);
+      if (d.kind === 'proc') { const p = this.sim.processors.find((q) => q.uid === d.uid) ?? this.sim.processors.find((q) => q.uid === undefined && q.x === d.x + (S >> 1) && q.y === d.y + (S >> 1)); if (p) { p.uid = d.uid; p.name = d.name; } }
+    }
+    for (const p of this.sim.processors) { if (p.uid === undefined) p.uid = this.nextUid++; if (!p.name) p.name = this.newName(PROCESSES[p.mode].name); }
+    for (const p of this.sim.pumps) { if (p.uid === undefined) p.uid = this.nextUid++; if (!p.name) p.name = this.newName(OBJ_LABEL.pump); }
+    const ids = [...this.devices.map((d) => d.uid!), ...this.sim.processors.map((p) => p.uid!), ...this.sim.pumps.map((p) => p.uid!)];
+    this.nextUid = Math.max(this.nextUid, ...ids.map((u) => u + 1));
+  }
+
+  /** 置いた物の親子ツリー（機構：モーター＞腕＞関節＞子、循環装置＞ポート、ポンプ＞吸込口・吐出口） */
+  tree(): TreeItem[] {
+    const mk = (n: MechNode): TreeItem => ({
+      key: `n:${n.id}`, name: n.name ?? `${OBJ_LABEL[n.type]}#?`, kind: n.type,
+      sub: n.parent >= 0 ? `${JOINT_NAMES[n.joint]}関節` : '固定点', fixed: this.fixedNodes.has(n.id),
+      children: this.mech.children(n.id).map(mk),
+    });
+    const out: TreeItem[] = this.mech.nodes.filter((n) => n.parent < 0 || !this.mech.byId(n.parent)).map(mk);
+    for (const d of this.devices) out.push({
+      key: `d:${d.uid}`, name: d.name ?? '', kind: d.kind, sub: d.kind === 'proc' ? '循環装置' : '装置',
+      children: d.kind === 'proc' ? PORTS.map((pn) => ({ key: `port:${d.uid}:${pn}`, name: PORT_NAMES[pn], kind: 'port', children: [] })) : [],
+    });
+    for (const p of this.sim.pumps) out.push({
+      key: `p:${p.uid}`, name: p.name ?? '', kind: 'pump', sub: 'ポンプ',
+      children: [{ key: `pe:${p.uid}:a`, name: '吸込口', kind: 'pumpEnd', children: [] }, { key: `pe:${p.uid}:b`, name: '吐出口', kind: 'pumpEnd', children: [] }],
+    });
+    return out;
+  }
+
+  /** クリック位置の配置物（ポート・ポンプ口 → 機構 → 装置 の順に探す） */
+  pickObject(x: number, y: number): string {
+    const S = this.S;
+    for (const p of this.sim.processors) for (const pn of PORTS) {
+      const [dx, dy] = portOffset(p, pn); if (Math.hypot(p.x + dx - x, p.y + dy - y) <= 2 * S) return `port:${p.uid}:${pn}`;
+    }
+    for (const p of this.sim.pumps) {
+      if (Math.hypot(p.ax - x, p.ay - y) <= 3 * S) return `pe:${p.uid}:a`;
+      if (Math.hypot(p.bx - x, p.by - y) <= 3 * S) return `pe:${p.uid}:b`;
+    }
+    // モーター（形のない機構）を先に。次に可動壁のセル
+    this.mech.computePoses();
+    let best = '', bd = 2.5 * S;
+    for (const q of this.mech.nodes) { if (this.mech.isBody(q)) continue; const P = this.mech.pose(q.id)!; const d = Math.hypot(P.x - x, P.y - y); if (d <= bd) { bd = d; best = `n:${q.id}`; } }
+    if (best) return best;
+    const n = this.mech.nodeAt(x, y, 4 * S); if (n) return `n:${n.id}`;
+    const [a, b] = this.devRange();
+    const d = this.devices.find((q) => x - q.x >= a && x - q.x <= b && y - q.y >= a && y - q.y <= b);
+    return d ? `d:${d.uid}` : '';
+  }
+
+  /** 置いた物をずらす（実セル）。費用は変わらない。子は親についていく */
+  moveObject(key: string, dx: number, dy: number): boolean {
+    dx = Math.round(dx); dy = Math.round(dy);
+    if (!dx && !dy) return false;
+    const [kind, a, b] = key.split(':'); const id = Number(a);
+    if (kind === 'n') return this.moveNode(id, dx, dy);
+    if (kind === 'd') return this.moveDevice(id, dx, dy);
+    if (kind === 'p' || kind === 'pe') {
+      const p = this.sim.pumps.find((q) => q.uid === id); if (!p) return false;
+      const ends: ('a' | 'b')[] = kind === 'p' ? ['a', 'b'] : [b as 'a' | 'b'];
+      for (const e of ends) if (!this.sim.inside(p[`${e}x`] + dx, p[`${e}y`] + dy)) return false;
+      for (const e of ends) { p[`${e}x`] += dx; p[`${e}y`] += dy; }
+      return true;
+    }
+    if (kind === 'port') {
+      const p = this.sim.processors.find((q) => q.uid === id); if (!p) return false;
+      const [ox, oy] = portOffset(p, b as PortName);
+      return this.setPort(id, b as PortName, ox + dx, oy + dy);
+    }
+    return false;
+  }
+  /** 機構の中で、固定壁・装置・ガイドに重なるセル数 */
+  private badCells(ids: number[]) {
+    const t = this.sim.t; let c = 0;
+    for (const k of ids) {
+      const n = this.mech.byId(k); if (!n || !this.mech.isBody(n)) continue;
+      for (const i of this.mech.bodyCells(n, this.mech.pose(k)!)) { const m = t[i]; if (m === M.GUIDE) c += 1000; else if (m !== M.MOVER && (KIND[m] === 1 || KIND[m] === 5)) c++; }
+    }
+    return c;
+  }
+  private moveNode(id: number, dx: number, dy: number) {
+    const n = this.mech.byId(id); if (!n) return false;
+    if (!this.sandbox && this.fixedNodes.has(id)) return false;
+    const sub = [id, ...this.descendants(id)];
+    const prev = new Map(this.mech.computePoses());
+    const before = this.badCells(sub);
+    const old = [n.ox, n.oy];
+    if (n.parent < 0 || !this.mech.byId(n.parent)) { n.ox += dx; n.oy += dy; }
+    else {
+      // 親の座標系でのずれに直す
+      const f = this.mech.frameOf(this.mech.byId(n.parent)!); const c = Math.cos(-f.a), s = Math.sin(-f.a);
+      n.ox += dx * c - dy * s; n.oy += dx * s + dy * c;
+    }
+    const poses = this.mech.computePoses();
+    const inside = sub.every((k) => { const P = poses.get(k)!; return P.x >= 0 && P.y >= 0 && P.x < this.sim.w && P.y < this.sim.h; });
+    if (!inside || this.badCells(sub) > before) { n.ox = old[0]; n.oy = old[1]; this.mech.computePoses(); return false; }
+    this.mech.rasterize(prev); // 重なった流体は動く板と同じく押しのける
+    return true;
+  }
+  private moveDevice(uid: number, dx: number, dy: number) {
+    const d = this.devices.find((q) => q.uid === uid); if (!d) return false;
+    const s = this.sim, [a, b] = this.devRange();
+    const inOld = (x: number, y: number) => x - d.x >= a && x - d.x <= b && y - d.y >= a && y - d.y <= b;
+    const nx = d.x + dx, ny = d.y + dy;
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) {
+      const x = nx + i, y = ny + j;
+      if (!s.inside(x, y)) return false;
+      if (!inOld(x, y) && !replaceable(s.get(x, y), this.sandbox, true)) return false;
+    }
+    const i0 = d.y * s.w + d.x, mat = s.t[i0], aux = s.aux[i0];
+    const inNew = (x: number, y: number) => x - nx >= a && x - nx <= b && y - ny >= a && y - ny <= b;
+    const displaced: [number, number, number][] = [];
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) { const x = nx + i, y = ny + j; if (inOld(x, y)) continue; const k = y * s.w + x; if (s.t[k] !== M.EMPTY) displaced.push([s.t[k], s.temp[k], s.aux[k]]); }
+    const freed: number[] = [];
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) { const x = d.x + i, y = d.y + j; if (!inNew(x, y)) { s.set(x, y, M.EMPTY); freed.push(y * s.w + x); } }
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) s.set(nx + i, ny + j, mat, aux);
+    // 押しのけた流体は、装置が空けた場所へ（消さない）
+    displaced.forEach(([m, tp, ax], k) => { const c = freed[k]; if (c === undefined) return; s.t[c] = m; s.temp[c] = tp; s.aux[c] = ax; s.wake(c); });
+    d.x = nx; d.y = ny;
+    if (d.kind === 'proc') { const p = s.processors.find((q) => q.uid === uid); if (p) { p.x += dx; p.y += dy; } }
+    return true;
+  }
+  /** 循環装置のポートの位置を決める（装置中心からのずれ）。装置に重ならないよう、半径内に収める */
+  setPort(uid: number, port: PortName, dx: number, dy: number) {
+    const p = this.sim.processors.find((q) => q.uid === uid); if (!p) return false;
+    const [cx, cy] = clampPortOffset(p.size, dx, dy);
+    if (!this.sim.inside(Math.round(p.x + cx), Math.round(p.y + cy))) return false;
+    if (!p.ports) p.ports = PORTS.flatMap((pn) => defaultPortOffset(p.size, pn));
+    const k = PORTS.indexOf(port) * 2;
+    if (p.ports[k] === cx && p.ports[k + 1] === cy) return false;
+    p.ports[k] = cx; p.ports[k + 1] = cy; this.sim.wakeAll();
+    return true;
+  }
+  resetPorts(uid: number) { const p = this.sim.processors.find((q) => q.uid === uid); if (!p || !p.ports) return false; delete p.ports; return true; }
 
   private eraseAt(x: number, y: number): boolean {
     const s = this.sim, S = this.S; let ch = false;
