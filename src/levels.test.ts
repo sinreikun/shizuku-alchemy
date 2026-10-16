@@ -31,3 +31,17 @@ describe('ステージ検証', () => {
     }
   }
 });
+
+describe('星の基準', () => {
+  for (const lv of LEVELS) {
+    it(`${lv.title}: 節約解で★3が取れる`, () => {
+      const g = new Game(lv);
+      lv.eco!(g);
+      g.start();
+      const limit = (lv.limit ?? 6000) * 1.5;
+      while (!g.won && g.ticks < limit) g.tick();
+      expect(g.won, `progress=${g.progress}`).toBe(true);
+      expect(g.starScore().stars).toBe(3);
+    }, 60000);
+  }
+});

@@ -19,6 +19,8 @@ export interface Level {
   build: (s: Sim) => void;
   /** 自動検証用の解答手順（放水前に配置する） */
   solve?: (g: Game) => void;
+  /** ★3を狙える節約解（星の基準になる） */
+  eco?: (g: Game) => void;
   /** 素朴な近道（これではクリアできないことをテストする） */
   naive?: { desc: string; run: (g: Game) => void }[];
   /** 解答の最大ティック数 */
@@ -212,12 +214,28 @@ export class Game {
 
   get sourcesLeft() { return this.level.sources.reduce((a, s, k) => a + Math.max(0, s.total - this.emitted[k]), 0); }
 
-  /** 星：初期資源のうち残った割合 */
-  starScore() {
-    const base = this.level.inv;
-    let tot = 0, left = 0;
-    for (const k of Object.keys(base) as (keyof Inventory)[]) { const b = base[k] ?? 0; if (!b) continue; const wgt = k === 'ink' ? 1 : 40; tot += b * wgt; left += this.inv[k] * wgt; }
-    const used = tot ? 1 - left / tot : 0;
-    return { used, stars: used <= 0.5 ? 3 : used <= 0.8 ? 2 : 1 };
+  /** 資源コスト：インク・選択膜1セル=1、装置1個=40 */
+  cost() {
+    const base = this.level.inv; let c = 0;
+    for (const k of Object.keys(base) as (keyof Inventory)[]) { const b = base[k] ?? 0; if (!b || b === Infinity) continue; c += (b - this.inv[k]) * COST_WEIGHT[k]; }
+    return c;
   }
+
+  /** 星：ステージごとの基準コスト（節約解から算出）と比べる */
+  starScore() {
+    const th = starThresholds(this.level);
+    const cost = this.cost();
+    return { cost, ...th, stars: cost <= th.three ? 3 : cost <= th.two ? 2 : 1 };
+  }
+}
+
+export const COST_WEIGHT: Record<keyof Inventory, number> = { ink: 1, filter: 1, heater: 40, cooler: 40, igniter: 40, electro: 40, pump: 40 };
+const thCache = new Map<string, { eco: number; three: number; two: number }>();
+/** 節約解のコストに余裕を持たせて ★3/★2 の基準を決める */
+export function starThresholds(level: Level) {
+  const hit = thCache.get(level.id); if (hit) return hit;
+  let eco = 0;
+  if (level.eco) { const g = new Game(level); level.eco(g); eco = g.cost(); }
+  const r = { eco, three: Math.ceil(eco * 1.3 + 10), two: Math.ceil(eco * 2 + 40) };
+  thCache.set(level.id, r); return r;
 }

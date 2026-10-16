@@ -30,6 +30,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 2, y: 96, w: 116, h: 2 }],
     build(s) { frame(s); rect(s, 2, 94, 116, 4, M.EMPTY); rect(s, 118, 70, 4, 28); cup(s, 128, 82, 24, 12); rect(s, 40, 40, 30, 3); },
     solve(g) { g.stroke('wall', 12, 30, 118, 80); },
+    eco(g) { g.brush = 0; g.stroke('wall', 12, 30, 118, 80); },
   },
   {
     id: 'l2', chapter: 'heat', title: '湯気のエレベーター', learn: 'ヒーター・クーラー・相変化',
@@ -40,6 +41,7 @@ export const LEVELS: Level[] = [
     drains: [],
     build(s) { frame(s); rect(s, 2, 80, 90, 18); rect(s, 10, 66, 2, 14); rect(s, 70, 66, 2, 14); rect(s, 10, 78, 62, 2); rect(s, 92, 26, 4, 72); cup(s, 112, 16, 30, 8); rect(s, 96, 26, 16, 2); },
     solve(g) { g.apply('heater', 28, 76); g.apply('heater', 52, 76); g.stroke('wall', 6, 46, 108, 8); g.apply('cooler', 122, 5); g.apply('cooler', 136, 5); },
+    eco(g) { g.apply('heater', 40, 76); g.apply('cooler', 128, 5); },
     limit: 9000,
   },
   {
@@ -51,6 +53,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 102, y: 74, w: 56, h: 2 }],
     build(s) { frame(s); rect(s, 2, 76, 60, 22); rect(s, 98, 76, 60, 22); rect(s, 62, 86, 36, 12); rect(s, 98, 66, 4, 10); },
     solve(g) { g.stroke('wall', 150, 18, 100, 56); },
+    eco(g) { g.brush = 0; g.stroke('wall', 146, 20, 100, 56); },
     limit: 8000,
   },
   {
@@ -62,6 +65,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 70, y: 96, w: 40, h: 2 }],
     build(s) { frame(s); rect(s, 2, 60, 66, 38); rect(s, 70, 94, 40, 4, M.EMPTY); rect(s, 110, 70, 4, 28); cup(s, 132, 88, 12, 6); },
     solve(g) { g.stroke('wall', 40, 36, 40, 59); g.stroke('wall', 42, 38, 133, 84); },
+    eco(g) { g.brush = 0; g.stroke('wall', 40, 38, 40, 59); g.stroke('wall', 41, 40, 133, 84); },
     naive: [{ desc: '湧き口から壺へ直接坂を引く', run: (g) => g.stroke('wall', 14, 14, 133, 84) }],
     limit: 9000,
   },
@@ -86,6 +90,7 @@ export const LEVELS: Level[] = [
       fill(s, 10, 46, 51, 52, () => M.WATER); fill(s, 65, 44, 53, 54, () => M.WATER);
     },
     solve(g) { g.stroke('wall', 12, 9, 100, 20); },
+    eco(g) { g.brush = 0; g.stroke('wall', 13, 9, 70, 16); },
     naive: [
       { desc: '壺の真上（密室の天井）へ坂を引く', run: (g) => g.stroke('wall', 12, 9, 36, 32) },
       { desc: '湧き口の下に何も描かない（天井に直接落とす）', run: () => {} },
@@ -101,6 +106,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 2, y: 96, w: 112, h: 2 }],
     build(s) { frame(s); rect(s, 2, 94, 112, 4, M.EMPTY); rect(s, 114, 70, 4, 28); cup(s, 124, 84, 26, 10); },
     solve(g) { g.stroke('wall', 22, 24, 113, 68); g.stroke('wall', 20, 14, 20, 24); },
+    eco(g) { g.stroke('wall', 22, 24, 113, 68); g.stroke('wall', 20, 14, 20, 24); },
     limit: 12000,
   },
   {
@@ -112,6 +118,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 2, y: 2, w: 156, h: 2 }],
     build(s) { frame(s); rect(s, 58, 70, 2, 26); rect(s, 100, 70, 2, 26); rect(s, 58, 94, 44, 2); },
     solve(g) { g.apply('heater', 66, 92); g.apply('heater', 80, 92); g.apply('heater', 94, 92); },
+    eco(g) { g.apply('heater', 72, 92); g.apply('heater', 88, 92); },
     limit: 9000,
   },
   {
@@ -123,6 +130,7 @@ export const LEVELS: Level[] = [
     drains: [],
     build(s) { frame(s); rect(s, 30, 70, 100, 2); rect(s, 30, 50, 2, 20); rect(s, 128, 50, 2, 20); fill(s, 2, 4, 156, 94, air(s)); },
     solve(g) { g.apply('igniter', 80, 30); },
+    eco(g) { g.apply('igniter', 80, 30); },
     limit: 9000,
   },
   {
@@ -134,6 +142,7 @@ export const LEVELS: Level[] = [
     drains: [],
     build(s) { frame(s); rect(s, 2, 40, 76, 4); rect(s, 74, 40, 4, 58); rect(s, 90, 20, 8, 78); fill(s, 2, 44, 72, 54, () => M.WATER); cup(s, 120, 82, 30, 12); },
     solve(g) { g.apply('pump', 30, 90); g.apply('pump', 134, 70); },
+    eco(g) { g.apply('pump', 30, 90); g.apply('pump', 134, 70); },
     limit: 6000,
   },
   {
@@ -145,6 +154,7 @@ export const LEVELS: Level[] = [
     drains: [{ x: 100, y: 96, w: 56, h: 2 }],
     build(s) { frame(s); rect(s, 100, 94, 56, 4, M.EMPTY); cup(s, 64, 88, 14, 6); },
     solve(g) { g.stroke('filter', 63, 40, 79, 50); g.stroke('wall', 81, 51, 106, 66); },
+    eco(g) { g.brush = 0; g.stroke('filter', 64, 41, 78, 49); g.stroke('wall', 80, 50, 100, 62); },
     naive: [{ desc: '膜を使わず、壁の漏斗で壺へ流す', run: (g) => { g.stroke('wall', 50, 40, 64, 80); g.stroke('wall', 92, 40, 80, 80); } }],
     limit: 9000,
   },
@@ -157,6 +167,7 @@ export const LEVELS: Level[] = [
     drains: [],
     build(s) { frame(s); rect(s, 4, 70, 2, 26); rect(s, 80, 70, 2, 26); fill(s, 6, 74, 74, 22, () => M.WATER); },
     solve(g) { g.apply('electro', 40, 90); },
+    eco(g) { g.apply('electro', 40, 90); },
     limit: 6000,
   },
   {
@@ -168,6 +179,7 @@ export const LEVELS: Level[] = [
     drains: [],
     build(s) { frame(s); rect(s, 100, 50, 58, 48); fill(s, 2, 76, 98, 22, () => M.WATER); cup(s, 118, 38, 30, 10); },
     solve(g) { g.apply('electro', 50, 92); g.apply('igniter', 50, 30); g.apply('cooler', 126, 26); g.apply('cooler', 140, 26); },
+    eco(g) { g.apply('electro', 50, 92); g.apply('igniter', 50, 30); g.apply('cooler', 133, 26); },
     limit: 14000,
   },
 ];

@@ -69,3 +69,4 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   .side{border:0;border-top:1px solid var(--line);max-height:30vh}
   .perf{display:none}.ctrl{margin-left:0}.help{display:none}
 }
+.score{font-size:13px;display:grid;gap:4px}.th{display:flex;justify-content:space-between;padding:3px 8px;border-radius:8px;color:var(--mut);border:1px solid transparent}.th.on{color:var(--acc2);border-color:#ffe36e55;background:#ffe36e12}

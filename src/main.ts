@@ -1,6 +1,6 @@
 import './style.css';
 import { M, MATS } from './sim';
-import { Game, Tool, Level, DEVICE_MAT } from './game';
+import { Game, Tool, Level, DEVICE_MAT, starThresholds } from './game';
 import { LEVELS, SANDBOX, CHAPTERS } from './levels';
 import { loadBrush, saveBrush, clampBrush, brushLabel } from './prefs';
 
@@ -122,6 +122,7 @@ function startLevel(l: Level) {
   $('#labBox').style.display = sandbox ? '' : 'none';
   $('#goalsBox').style.display = sandbox ? 'none' : '';
   $('#invBox').style.display = sandbox ? 'none' : '';
+  $('#scoreBox').style.display = sandbox ? 'none' : '';
   $('#step').style.display = '';
   setBrush(loadBrush());
   resize(); fit();
@@ -215,6 +216,15 @@ function hud() {
     if (!base) continue;
     const pct = base === Infinity ? 100 : (g.inv[k] / base) * 100;
     inv.insertAdjacentHTML('beforeend', `<div class="it"><span class="sw" style="--sw:${k === 'pump' ? '#9dffb8' : css(m)}"></span><span>${n}</span><b>${fmt(g.inv[k])}</b><div class="bar thin"><i style="width:${pct}%"></i></div></div>`);
+  }
+  if (!sandbox) {
+    const th = starThresholds(level); const c = g.cost();
+    const now = c <= th.three ? 3 : c <= th.two ? 2 : 1;
+    $('#score').innerHTML = `<div class="gl"><span>資源コスト</span><b>${c}</b></div>
+      <div class="th ${now === 3 ? 'on' : ''}"><span>★★★</span><span>≤ ${th.three}</span></div>
+      <div class="th ${now === 2 ? 'on' : ''}"><span>★★☆</span><span>≤ ${th.two}</span></div>
+      <div class="th ${now === 1 ? 'on' : ''}"><span>★☆☆</span><span>それ以上</span></div>
+      <div class="muted">インク・膜1セル = 1、装置1個 = 40</div>`;
   }
   $('#brushv').textContent = brushLabel(g.brush);
   const bs = $('#brush') as HTMLInputElement; if (bs.value !== String(g.brush)) bs.value = String(g.brush);
@@ -405,12 +415,12 @@ function toast(s: string) { const t = $('#toast'); t.textContent = s; t.classLis
 
 // ---------- クリア ----------
 function onWin() {
-  const { used, stars } = game.starScore();
+  const { cost, three, two, stars } = game.starScore();
   prog.stars[level.id] = Math.max(prog.stars[level.id] || 0, stars);
   if (!prog.learned.includes(level.id)) prog.learned.push(level.id);
   saveProg();
   $('#winstars').innerHTML = [0, 1, 2].map((k) => `<span class="${k < stars ? 'on' : ''}" style="animation-delay:${k * 0.15}s">★</span>`).join('');
-  $('#winmsg').textContent = `資源の使用率 ${Math.round(used * 100)}%　${stars === 3 ? '見事な錬金術！' : stars === 2 ? 'いい流れ！' : 'クリア！ 少ない資源で★3を目指そう'}`;
+  $('#winmsg').textContent = `資源コスト ${cost}（★★★ ≤ ${three} ／ ★★ ≤ ${two}）　${stars === 3 ? '見事な錬金術！' : stars === 2 ? 'いい流れ！' : 'クリア！ 少ない資源で★3を目指そう'}`;
   const newTools = TOOLS.filter((t) => t.learnAt === level.id).map((t) => t.name);
   $('#winlearn').innerHTML = newTools.length ? `🔓 自由実験室で習得：${newTools.join('・')}` : '';
   $('#next').textContent = LEVELS.indexOf(level) === LEVELS.length - 1 ? '自由実験室へ ▶' : '次へ ▶';
