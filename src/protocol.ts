@@ -2,6 +2,7 @@
 import type { Inventory, Tool, TreeItem } from './game';
 import type { MechNode } from './mech';
 import type { ProcessMode } from './sim';
+import type { ScoreView } from './samples';
 
 export interface NodeView {
   id: number; type: MechNode['type']; parent: number; joint: MechNode['joint']; on: boolean; speed: number; dir: number;
@@ -21,6 +22,9 @@ export interface GameState {
   cost: number; sourcesLeft: number; brush: number; filterMat: number; stalls: number;
   simMs: number; awake: number; chunks: number;
   hover: { m: number; temp: number } | null;
+  /** 自由実験室で読み込んだ見本の id と、挑戦の採点 */
+  sampleId: string | null;
+  challenge: (ScoreView & { title: string; rule: string }) | null;
 }
 export type ToWorker =
   | { type: 'init'; levelId: string; sandbox: boolean; seed: number; brush: number; lw?: number; lh?: number }

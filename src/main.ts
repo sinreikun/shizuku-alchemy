@@ -6,6 +6,7 @@ import { initWindows, place as placeWindows, resetLayout } from './windows';
 import { NODE_NAMES, JOINT_NAMES, type JointType } from './mech';
 import { loadBrush, saveBrush, clampBrush, brushLabel } from './prefs';
 import type { GameState, FromWorker, ToWorker, NodeView } from './protocol';
+import { SAMPLES, SAMPLE_CATS, sampleById } from './samples';
 import SimWorker from './worker?worker';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -69,6 +70,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     frameBusy = false;
     if (!st || m.state.w !== st.w || m.state.h !== st.h) { st = m.state; syncCanvas(); return; }
     st = m.state;
+    if (m.buf.byteLength !== img.data.length) { syncCanvas(); if (m.buf.byteLength !== img.data.length) return; }
     buf = m.buf; gbuf = m.gbuf;
     img.data.set(new Uint8ClampedArray(buf)); octx.putImageData(img, 0, 0);
     if (glow) { gimg.data.set(new Uint8ClampedArray(gbuf)); gctx.putImageData(gimg, 0, 0); }
@@ -273,6 +275,7 @@ async function startLevel(l: Level) {
   $('#w-status').style.display = sandbox ? 'none' : '';
   $('#invBox').style.display = sandbox ? 'none' : '';
   $('#scoreBox').style.display = sandbox ? 'none' : '';
+  $('#samplesBtn').style.display = sandbox ? '' : 'none';
   setBrush(brush);
   resize(); placeWindows(); fit();
   buildPalette(); hud();
@@ -750,6 +753,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); if (!spaceHeld) { spaceHeld = true; spaceUsed = false; canvas.classList.add('grab'); } return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) doRedo(); else doUndo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); return; }
+  if (e.key === 'Escape' && !$('#samples').classList.contains('hidden')) { closeSamples(); return; }
   if (e.key === 'Escape') { if (st?.pendingPump) { op('cancelPump'); toast('ポンプ配置を取り消した'); } else if (selected || selKey) { setSel(''); } else showMenu(); return; }
   if (e.key === 'r' || e.key === 'R') { retry(); return; }
   if (e.key === 'f' || e.key === 'F') { fit(); return; }
@@ -769,7 +773,7 @@ async function toggleFlow() {
   hud();
 }
 async function stepOnce() { paused = true; await op('step'); hud(); }
-async function retry() { await op('reset', true); parts = []; $('#win').classList.add('hidden'); hud(); toast('配置を残して流し直し'); }
+async function retry() { if (sandbox && st?.sampleId && await op('resetSample')) { parts = []; hud(); toast('見本の中身を最初に戻した（置いた物は残す。↶ で戻せる）'); return; } await op('reset', true); parts = []; $('#win').classList.add('hidden'); hud(); toast('配置を残して流し直し'); }
 async function doUndo() { if (await op('undo')) { hud(); renderNodePanel(); blip(300, 0.04); } }
 async function doRedo() { if (await op('redo')) { hud(); renderNodePanel(); blip(500, 0.04); } }
 function closeBrief() { briefOpen = false; $('#brief').classList.add('hidden'); }
@@ -1058,7 +1062,7 @@ function loop(now: number) {
       }
     }
     draw(now);
-    if (now - hudT > 150) { hud(); inspect(); hudT = now; }
+    if (now - hudT > 150) { hud(); inspect(); renderChallenge(); hudT = now; }
     frames++;
     if (now - fpsT > 1000) { $('#perf').textContent = `${frames} fps ・ ${st.simMs.toFixed(2)} ms/tick（${st.w}×${st.h}・Worker・稼働チャンク ${st.awake}/${st.chunks}）`; frames = 0; fpsT = now; }
   }
@@ -1073,9 +1077,75 @@ initWindows($('#layout'), [
   { id: 'eraseBox', title: '消しゴムの対象', x: 238, y: 8, w: 270, h: 440 },
   { id: 'w-status', title: '目標・評価・手持ち', x: -8, y: 8, w: 252, h: 330 },
   { id: 'w-tree', title: '配置したもの', x: -8, y: 346, w: 252, h: 240 },
+  { id: 'w-challenge', title: '挑戦の採点', x: -8, y: 8, w: 252, h: 330 },
   { id: 'nodeBox', title: '選択中の調整', x: -268, y: 8, w: 250, h: 360 },
   { id: 'w-view', title: '表示・設定', x: -8, y: -8, w: 252, h: 330, min: true },
 ]);
+// ---------- 見本の一覧 ----------
+const LAB_PREV = 'shizuku-alchemy-lab-prev';
+const BEST_KEY = 'shizuku-alchemy-sample-best';
+let prevLab: string | null = null;
+let sampleTab = 'all';
+let pendingSample = '';
+const thumbURL = new Map<string, ImageData>();
+function bests(): Record<string, number> { try { return JSON.parse(localStorage.getItem(BEST_KEY) || '{}'); } catch { return {}; } }
+function openSamples() { $('#samples').classList.remove('hidden'); pendingSample = ''; $('#sampleConfirm').classList.add('hidden'); renderSamples(); }
+function closeSamples() { $('#samples').classList.add('hidden'); pendingSample = ''; }
+function renderSamples() {
+  const tabs = $('#sampleTabs');
+  tabs.innerHTML = [['all', 'すべて'], ...SAMPLE_CATS.map((c) => [c.id, c.name])].map(([id, nm]) => `<button data-t="${id}" class="${sampleTab === id ? 'on' : ''}">${nm}</button>`).join('');
+  tabs.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.onclick = () => { sampleTab = b.dataset.t!; renderSamples(); });
+  ($('#sampleUndo') as HTMLButtonElement).disabled = !(prevLab ?? localStorage.getItem(LAB_PREV));
+  const grid = $('#sampleGrid'); grid.innerHTML = '';
+  const best = bests();
+  for (const c of SAMPLE_CATS) {
+    if (sampleTab !== 'all' && sampleTab !== c.id) continue;
+    grid.insertAdjacentHTML('beforeend', `<h4>${c.name}</h4>`);
+    for (const sm of SAMPLES.filter((q) => q.cat === c.id)) {
+      const rec = best[sm.id] !== undefined ? `自己ベスト ${best[sm.id]}${sm.id === 'flame' ? '秒' : '点'}` : '';
+      grid.insertAdjacentHTML('beforeend', `<div class="scard ${st?.sampleId === sm.id ? 'cur' : ''}" data-s="${sm.id}"><canvas width="240" height="${Math.round((240 * sm.h) / sm.w)}" style="--ar:${sm.w}/${sm.h}"></canvas><div class="nm">${sm.title}${sm.challenge ? '<span class="badge">採点つき</span>' : ''}</div><div class="ds">${sm.desc}</div><div class="ft"><span>${sm.w}×${sm.h}${rec ? ' ・ ' + rec : ''}</span><button class="btn mini" data-load="${sm.id}">読み込む</button></div></div>`);
+    }
+  }
+  grid.querySelectorAll<HTMLElement>('.scard').forEach((card) => { drawThumb(card.querySelector('canvas')!, card.dataset.s!); });
+  grid.querySelectorAll<HTMLButtonElement>('[data-load]').forEach((b) => b.onclick = () => askSample(b.dataset.load!));
+}
+async function drawThumb(cv: HTMLCanvasElement, id: string) {
+  let im = thumbURL.get(id);
+  if (!im) { const t = await op<{ w: number; h: number; data: Uint8ClampedArray }>('sampleThumb', id, 240); im = new ImageData(new Uint8ClampedArray(t.data), t.w, t.h); thumbURL.set(id, im); }
+  cv.width = im.width; cv.height = im.height; cv.getContext('2d')!.putImageData(im, 0, 0);
+}
+function askSample(id: string) {
+  pendingSample = id; const sm = sampleById(id)!;
+  $('#scTitle').textContent = `「${sm.title}」（${sm.w}×${sm.h}）を読み込む？`;
+  $('#sampleConfirm').classList.remove('hidden');
+}
+async function loadSample(id: string) {
+  const sm = sampleById(id); if (!sm) return;
+  // 上書きの前に今の実験台の控えを取る（メモリと、入ればブラウザにも）
+  prevLab = await op<string>('serialize');
+  try { localStorage.setItem(LAB_PREV, prevLab); } catch { /* 大きすぎるときはメモリだけ */ }
+  const json = await op<string>('sampleSave', id);
+  await loadLab(json);
+  closeSamples(); setSel(''); fit(); hud(); renderChallenge();
+  toast(`見本「${sm.title}」を読み込んだ（↶ か「前の実験台に戻す」で戻せる）`);
+}
+$('#samplesBtn').onclick = openSamples;
+$('#samplesClose').onclick = closeSamples;
+$('#samples').addEventListener('pointerdown', (e) => { if (e.target === $('#samples')) closeSamples(); });
+$('#scCancel').onclick = () => { pendingSample = ''; $('#sampleConfirm').classList.add('hidden'); };
+$('#scOk').onclick = () => { if (pendingSample) loadSample(pendingSample); };
+$('#sampleUndo').onclick = async () => { const d = prevLab ?? localStorage.getItem(LAB_PREV); if (!d) return; await loadLab(d); closeSamples(); fit(); toast('見本を読み込む前の実験台に戻した'); };
+
+function renderChallenge() {
+  const box = $('#w-challenge'); const c = st?.challenge;
+  if (!sandbox || !c) { if (box.style.display !== 'none') box.style.display = 'none'; return; }
+  box.style.display = '';
+  const id = st!.sampleId!; const all = bests();
+  if (!c.invalid && c.value > (all[id] ?? 0) && st!.ticks > 0) { all[id] = c.value; try { localStorage.setItem(BEST_KEY, JSON.stringify(all)); } catch { /* 無視 */ } }
+  const bars = c.parts.map((p) => { const v = Math.max(0, Math.min(1, p.value)); return `<div class="pr"><span>${p.label}</span><span class="bar"><i style="width:${v * 100}%;background:${p.color}"></i></span><span>${Math.round(v * 100)}%</span></div>`; }).join('');
+  $('#challenge').innerHTML = `<div class="gl"><b>${c.title}</b></div><div class="big">${c.value}<small>${c.unit}</small></div><div class="best">${c.text} ・ 自己ベスト ${all[id] ?? 0}${c.unit}</div>${c.invalid ? `<div class="bad">⚠ 記録外：${c.invalid}</div>` : ''}${bars}<div class="rule">${c.rule}<br>「↺ 流し直し」で、置いた物は残したまま中身だけ最初に戻せる。</div>`;
+}
+
 $('#resetLayout').onclick = () => { resetLayout(); toast('ウィンドウの配置を元に戻した'); };
 $('#labResize').onclick = doLabResize;
 

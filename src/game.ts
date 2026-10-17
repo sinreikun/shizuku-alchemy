@@ -107,6 +107,10 @@ export class Game {
   private undoStack: ReturnType<Game['snap']>[] = [];
   private redoStack: ReturnType<Game['snap']>[] = [];
   onAbsorb?: (x: number, y: number, mat: number) => void;
+  /** 自由実験室の見本（挑戦の採点用の記録を含む） */
+  sample?: { id: string; mem: Record<string, number> };
+  /** 毎ティックの後に呼ぶ（見本の挑戦の記録） */
+  afterTick?: () => void;
 
   constructor(public level: Level, sandbox = false, seed = 7, scale = SCALE) {
     this.S = scale;
@@ -168,7 +172,7 @@ export class Game {
   }
 
   private snap() {
-    return { sim: this.sim.snapshot(), inv: { ...this.inv }, devices: this.devices.map((d) => ({ ...d })), nodes: this.mech.serialize(), nextId: this.mech.nextId };
+    return { sim: this.sim.snapshot(), inv: { ...this.inv }, devices: this.devices.map((d) => ({ ...d })), nodes: this.mech.serialize(), nextId: this.mech.nextId, sample: this.sample ? { id: this.sample.id, mem: { ...this.sample.mem } } : undefined, afterTick: this.afterTick };
   }
   pushUndo() { this.undoStack.push(this.snap()); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
   undo() { const s = this.undoStack.pop(); if (!s) return false; this.redoStack.push(this.snap()); this.load(s); return true; }
@@ -176,6 +180,7 @@ export class Game {
   private load(s: ReturnType<Game['snap']>) {
     this.sim.restore(s.sim); this.inv = { ...s.inv }; this.devices = s.devices.map((d) => ({ ...d })); this.voidDirty = true;
     this.mech.nodes = s.nodes.map((n) => ({ ...n })); this.mech.nextId = s.nextId; this.mech.computePoses(); this.mech.relink();
+    this.sample = s.sample ? { id: s.sample.id, mem: { ...s.sample.mem } } : undefined; this.afterTick = s.afterTick;
   }
   get canUndo() { return this.undoStack.length > 0; }
   get canRedo() { return this.redoStack.length > 0; }
@@ -686,6 +691,7 @@ export class Game {
       });
     }
     this.ticks++;
+    this.afterTick?.();
     this.goals.forEach((g, k) => {
       if (g.mode === 'stat') this.progress[k] = sim.stats[g.stat!];
       else if (g.mode === 'fill') {

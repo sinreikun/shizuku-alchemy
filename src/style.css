@@ -123,3 +123,24 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .stp input[type=range]{flex:1}.stp .num{width:64px}
 .nodep .rng .stp{width:100%}
 .warn{color:#ffb36e}.lock{font-size:11px}
+
+/* 見本の一覧 */
+.sbrowse{position:fixed;inset:0;z-index:2000;display:grid;place-items:center;background:#050710aa;backdrop-filter:blur(3px)}
+.sbrowse.hidden{display:none}
+.sbox{width:min(1100px,96vw);height:min(760px,92vh);display:flex;flex-direction:column;background:linear-gradient(160deg,#1b2347,#121731);border:1px solid var(--line);border-radius:16px;box-shadow:0 20px 60px #000a;overflow:hidden;position:relative}
+.shead{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}.shead h3{margin:0;font-size:18px}.shead .grow{flex:1}
+.sgrid{flex:1;overflow:auto;padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;align-content:start}
+.sgrid h4{grid-column:1/-1;margin:6px 0 0;color:var(--acc2);font-size:14px}
+.scard{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--line);border-radius:12px;background:#ffffff08}
+.scard canvas{width:100%;aspect-ratio:var(--ar);border-radius:8px;background:#0b0e1a;image-rendering:pixelated}
+.scard .nm{font-weight:700;display:flex;gap:6px;align-items:center}.scard .badge{font-size:11px;padding:1px 6px;border-radius:8px;background:#ff9de233;color:#ff9de2}
+.scard .ds{font-size:12px;color:var(--mut);flex:1;line-height:1.5}.scard .ft{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--mut)}
+.scard.cur{border-color:var(--acc2)}
+.sconfirm{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);width:min(560px,90%);display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:12px;background:#0b0e1af0;border:1px solid #ffe36e88;box-shadow:0 10px 30px #000a}
+.sconfirm.hidden{display:none}.sconfirm p{margin:4px 0 0;font-size:12px;color:var(--mut)}.sconfirm .row{display:flex;gap:8px}
+/* 挑戦の採点 */
+.chal .big{font-size:30px;font-weight:800;color:var(--acc2)}.chal .big small{font-size:14px;margin-left:4px}
+.chal .best{font-size:12px;color:var(--mut)}.chal .bad{color:#ff8a8a;font-size:12px;margin:4px 0}
+.chal .pr{display:grid;grid-template-columns:92px 1fr 38px;gap:6px;align-items:center;font-size:12px;margin:3px 0}
+.chal .pr .bar{height:8px;border-radius:4px;background:#ffffff14;overflow:hidden}.chal .pr .bar i{display:block;height:100%}
+.chal .rule{font-size:11px;color:var(--mut);line-height:1.5;margin-top:6px}

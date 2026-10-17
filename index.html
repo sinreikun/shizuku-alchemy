@@ -39,6 +39,7 @@
         <span class="sep"></span>
         <button id="retry" class="btn" title="配置を残して流し直す (R)">↺ 流し直し</button>
         <button id="wipe" class="btn" title="最初から">🧹</button>
+        <button id="samplesBtn" class="btn" title="見本の実験台を開く">📚 見本</button>
       </div>
       <div id="perf" class="perf"></div>
     </header>
@@ -61,6 +62,7 @@
         <section id="scoreBox"><h3>評価の目安</h3><div id="score" class="score"></div></section>
         <section id="invBox"><h3>手持ち</h3><div id="inv" class="inv"></div></section>
       </div>
+      <div id="w-challenge" style="display:none"><div id="challenge" class="chal"></div></div>
       <div id="w-tree"><section id="treeBox"><h3>配置したもの <span id="treeCount" class="muted"></span></h3><div id="tree" class="tree"></div></section></div>
       <div id="nodeBox" style="display:none"><div id="nodePanel" class="nodep"></div></div>
       <div id="eraseBox" style="display:none"><div id="erasePanel" class="erasep"></div></div>
@@ -78,6 +80,11 @@
       </div>
     </div>
   </section>
+  <div id="samples" class="sbrowse hidden"><div class="sbox">
+    <div class="shead"><h3>📚 見本の実験台</h3><div class="seg" id="sampleTabs"></div><span class="grow"></span><button id="sampleUndo" class="btn" title="見本を読み込む前の実験台に戻す">↩ 前の実験台に戻す</button><button id="samplesClose" class="btn icon" title="閉じる (Esc)">×</button></div>
+    <div id="sampleGrid" class="sgrid"></div>
+    <div id="sampleConfirm" class="sconfirm hidden"><div><b id="scTitle"></b><p>いまの実験台は上書きされます。上書きの前に自動で控えを取るので、「前の実験台に戻す」か ↶（元に戻す）で戻せます。</p></div><div class="row"><button id="scOk" class="btn primary">読み込む</button><button id="scCancel" class="btn">やめる</button></div></div>
+  </div></div>
   <div id="tip" class="tip"></div>
 </div>
 <script type="module" src="/src/main.ts"></script>

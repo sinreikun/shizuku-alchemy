@@ -4,6 +4,8 @@ import { Game, SCALE, resizeLab, type Tool } from './game';
 import { LEVELS, labLevel } from './levels';
 import { M, MATS, CH, portOffset, portAmount, RECIPES, type PortName } from './sim';
 import { paint } from './render';
+import { serializeGame, parseSave, applySave } from './save';
+import { buildSample, installSample, sampleScore, resetSampleInPlace, SAMPLE_SEED } from './samples';
 import type { ToWorker, FromWorker, GameState, NodeView } from './protocol';
 
 let game: Game | null = null;
@@ -33,47 +35,43 @@ function state(): GameState {
     nodes, cost: g.cost(), sourcesLeft: g.sourcesLeft, brush: g.brush, filterMat: g.filterMat, stalls: g.mech.stalls,
     simMs, awake: s.awakeChunks, chunks: s.cw * s.chh,
     hover: s.inside(hx, hy) ? { m: s.t[hy * s.w + hx], temp: s.temp[hy * s.w + hx] } : null,
+    sampleId: g.sample?.id ?? null, challenge: challengeView(g),
   };
 }
 
 // ---------- 保存（v3：機構・循環装置を含む。旧 v2 は2倍に拡大して読み込む） ----------
-const enc = (a: Uint8Array) => { let str = ''; for (let i = 0; i < a.length; i += 8192) str += String.fromCharCode(...a.subarray(i, i + 8192)); return btoa(str); };
-const dec = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
-function serialize() {
-  const g = game!, s = g.sim;
-  return JSON.stringify({ app: 'shizuku-alchemy', v: 5, lw: s.w / g.S, lh: s.h / g.S, w: s.w, h: s.h, t: enc(s.t), aux: enc(s.aux), temp: enc(new Uint8Array(s.temp.buffer.slice(0))), pumps: s.pumps, processors: s.processors, nodes: g.mech.serialize(), devices: g.devices, seq: g.seq, nextUid: g.nextUid });
+/** 挑戦の採点（重いので 10 ティックごと・盤面が変わったときだけ計算） */
+let scoreCache: { g: Game; ticks: number; dirty: number; view: ReturnType<typeof sampleScore> } | null = null;
+let opCount = 0;
+function challengeView(g: Game) {
+  if (!g.sample) return null;
+  if (scoreCache && scoreCache.g === g && scoreCache.dirty === opCount && Math.abs(g.ticks - scoreCache.ticks) < 10) return scoreCache.view;
+  scoreCache = { g, ticks: g.ticks, dirty: opCount, view: sampleScore(g) };
+  return scoreCache.view;
 }
+/** 見本のサムネイル（RGBA、横 tw） */
+const thumbs = new Map<string, { w: number; h: number; data: Uint8ClampedArray }>();
+function sampleThumb(id: string, tw: number) {
+  const key = id + ':' + tw; const c = thumbs.get(key); if (c) return c;
+  const g = buildSample(id, SAMPLE_SEED, SCALE); const s = g.sim;
+  for (let k = 0; k < 40; k++) g.tick(); // 少し動かして、描いたばかりの粒感をならす
+  const px = new Uint32Array(s.n), gpx = new Uint32Array(s.n); paint(s, px, gpx, 'mat', 0);
+  const th = Math.max(1, Math.round((tw * s.h) / s.w)); const data = new Uint8ClampedArray(tw * th * 4);
+  for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+    // 面積平均で縮小（細い線も消えにくいよう最大の明るさも少し混ぜる）
+    const x0 = Math.floor((x * s.w) / tw), x1 = Math.max(x0 + 1, Math.floor(((x + 1) * s.w) / tw)), y0 = Math.floor((y * s.h) / th), y1 = Math.max(y0 + 1, Math.floor(((y + 1) * s.h) / th));
+    let r = 0, gg = 0, b = 0, n = 0;
+    for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { const v = px[yy * s.w + xx]; r += v & 255; gg += (v >> 8) & 255; b += (v >> 16) & 255; n++; }
+    const o = (y * tw + x) * 4; data[o] = r / n; data[o + 1] = gg / n; data[o + 2] = b / n; data[o + 3] = 255;
+  }
+  const out = { w: tw, h: th, data }; thumbs.set(key, out); return out;
+}
+function serialize(g: Game = game!) { return serializeGame(g); }
 function deserialize(json: string) {
-  const d = JSON.parse(json);
-  if (d.app !== 'shizuku-alchemy') throw new Error('形式が違います');
+  const d = parseSave(json);
   // v5：自由実験室の大きさも保存。違う大きさなら作り直してから読む
   if (game!.sandbox && d.lw && d.lh && (d.w !== game!.sim.w || d.h !== game!.sim.h)) { const old = game!; game = hook(new Game(labLevel(d.lw, d.lh), true, seed, SCALE)); game.brush = old.brush; }
-  const g = game!, s = g.sim;
-  let t = dec(d.t), aux = dec(d.aux), temp = new Float32Array(dec(d.temp).buffer);
-  let k = 1;
-  if (d.w !== s.w || d.h !== s.h) {
-    k = s.w / d.w;
-    if (!Number.isInteger(k) || d.h * k !== s.h) throw new Error('大きさが合いません');
-    // 旧版（低解像度）の保存データを最近傍で拡大
-    const nt = new Uint8Array(s.n), na = new Uint8Array(s.n), ntp = new Float32Array(s.n);
-    for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const j = ((y / k) | 0) * d.w + ((x / k) | 0), i = y * s.w + x; nt[i] = t[j]; na[i] = aux[j]; ntp[i] = temp[j]; }
-    t = nt; aux = na; temp = ntp;
-  }
-  // 可動壁セルは機構から描き直すので一旦消す
-  for (let i = 0; i < t.length; i++) if (t[i] === M.MOVER) t[i] = M.EMPTY;
-  g.pushUndo();
-  s.t.set(t); s.aux.set(aux); s.temp.set(temp);
-  s.pumps = (d.pumps ?? []).map((p: { ax: number; ay: number; bx: number; by: number; rate: number; r?: number }) => ({ ...p, ax: p.ax * k, ay: p.ay * k, bx: p.bx * k, by: p.by * k, rate: p.rate * k, r: (p.r ?? 2) * k, moved: 0 }));
-  s.processors = (d.processors ?? []).map((p: object) => ({ ...p }));
-  g.devices = (d.devices ?? []).map((v: { x: number; y: number }) => ({ ...v, x: v.x * k, y: v.y * k }));
-  // v0.6 の消滅穴（物）は消滅穴セルに変換する
-  g.importVoids(d.voids ?? [], k);
-  g.mech.load(d.nodes ?? []);
-  // v4：名前の通し番号。旧版は名前を付け直す
-  g.seq = { ...(d.seq ?? {}) }; g.nextUid = d.nextUid ?? 1;
-  if (!d.seq) for (const n of g.mech.nodes) delete n.name;
-  g.ensureNames();
-  s.wakeAll();
+  applySave(game!, d);
 }
 
 const OPS: Record<string, (...a: never[]) => unknown> = {
@@ -81,7 +79,7 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   stroke: (tool: Tool, x0: number, y0: number, x1: number, y1: number, erase: boolean) => game!.stroke(tool, x0, y0, x1, y1, erase),
   pushUndo: () => game!.pushUndo(),
   undo: () => game!.undo(), redo: () => game!.redo(),
-  reset: (keep: boolean) => { game!.reset(keep); return true; },
+  reset: (keep: boolean) => { game!.reset(keep); if (!keep) { game!.sample = undefined; game!.afterTick = undefined; } return true; },
   start: () => { game!.start(); return true; },
   step: () => { const t0 = performance.now(); game!.start(); game!.tick(); simMs = performance.now() - t0; return true; },
   addRotor: (x: number, y: number) => game!.addRotor(x, y)?.id ?? 0,
@@ -96,6 +94,10 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   setAmbient: (v: number) => { game!.sim.ambient = v; game!.sim.wakeAll(); return true; },
   cancelPump: () => { game!.pendingPump = null; return true; },
   serialize: () => serialize(),
+  /** 見本の保存データ（v5）を作る：決定的なシードで新しく組み立てる */
+  sampleSave: (id: string) => serialize(buildSample(id, SAMPLE_SEED, SCALE)),
+  sampleThumb: (id: string, tw: number) => sampleThumb(id, tw),
+  resetSample: () => resetSampleInPlace(game!),
   deserialize: (json: string) => { deserialize(json); return true; },
   pickObject: (x: number, y: number) => game!.pickObject(x, y),
   moveObject: (key: string, dx: number, dy: number) => game!.moveObject(key, dx, dy),
@@ -132,6 +134,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
   if (!game) return;
   if (msg.type === 'op') {
     let result: unknown = null, error: string | undefined;
+    opCount++;
     try { result = (OPS[msg.op] as (...a: unknown[]) => unknown)?.(...msg.args); } catch (err) { error = String((err as Error).message); }
     post({ type: 'opResult', id: msg.id, result, state: state(), error });
     return;
