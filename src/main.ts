@@ -29,7 +29,6 @@ const TOOLS: ToolDef[] = [
   { tool: 'heater', name: 'ヒーター', desc: MATS[M.HEATER].desc, color: css(M.HEATER), cat: '装置', learnAt: 'l2', inv: 'heater' },
   { tool: 'cooler', name: 'クーラー', desc: MATS[M.COOLER].desc, color: css(M.COOLER), cat: '装置', learnAt: 'l2', inv: 'cooler' },
   { tool: 'igniter', name: '着火器', desc: MATS[M.IGNITER].desc, color: css(M.IGNITER), cat: '装置', learnAt: 'l8', inv: 'igniter' },
-  { tool: 'void', name: '消滅穴', desc: 'ドラッグで赤い穴の範囲を描く。入った流体・粉体を消す（ステージの赤い穴と同じ）。番号付きでツリーに並び、選択ツールで動かせる。', color: '#ff2d6a', cat: '装置', learnAt: 'l1' },
   { tool: 'pump', name: 'ポンプ', desc: '2回クリックで吸込口→吐出口。壁を越えて流体を運ぶ配管。', color: '#9dffb8', cat: '装置', learnAt: 'l9', inv: 'pump' },
   { tool: 'filter', name: '選択膜', desc: '指定した物質だけを通す膜。下の欄で通す物質を選ぶ。', color: css(M.FILTER), cat: '装置', learnAt: 'l10', inv: 'filter' },
   { tool: 'electro', name: '簡易電解板', desc: MATS[M.ELECTRO].desc + '（触れた水をその場で分解）', color: css(M.ELECTRO), cat: '装置', learnAt: 'l11', inv: 'electro' },
@@ -45,7 +44,7 @@ const TOOLS: ToolDef[] = [
   matTool(M.STEAM, 'l2'), matTool(M.HYDROGEN, 'l11'), matTool(M.OXYGEN, 'l8'), matTool(M.NITROGEN, 'l8'), matTool(M.CO2, 'l8'), matTool(M.SMOKE, 'l8'), matTool(M.HGVAPOR, 'l5'), matTool(M.FIRE, 'l8'), matTool(M.SOLVAPOR, 'p2'),
   { tool: 'air', name: '空気', desc: '酸素23%・窒素77%の有限量の混合気体を置く。', color: '#5d6fa8', cat: '気体', learnAt: 'l8' },
   matTool(M.SALT, 'l6'), matTool(M.SAND, 'l3'), matTool(M.ROCK, 'l3'), matTool(M.SOOT, 'l8'), matTool(M.ACTIVATOR, 'p1'), matTool(M.COMPOSITE, 'p1'),
-  matTool(M.ICE, 'l2'), matTool(M.GLASS, 'l3'),
+  matTool(M.ICE, 'l2'), matTool(M.GLASS, 'l3'), matTool(M.WALL, 'l1'), matTool(M.VOID, 'l1'),
 ];
 const CATS = ['基本', '機構', '装置', '循環装置', '液体', '気体', '粉体', '固体'];
 
@@ -167,7 +166,7 @@ function allocCanvas(w: number, h: number) {
 }
 function syncCanvas() { if (st && (st.w !== off.width || st.h !== off.height)) { allocCanvas(st.w, st.h); resize(); fit(); labUI(); } }
 // ---------- 消しゴムの対象・モード ----------
-const ERASE_OBJS: [string, string, keyof Inventory | null][] = [['void', '消滅穴', null], ['rotor', '回転モーター', 'rotor'], ['piston', 'ピストン', 'piston'], ['rect', '可動板', 'plate'], ['circle', '可動円盤', 'plate'], ['heater', 'ヒーター', 'heater'], ['cooler', 'クーラー', 'cooler'], ['igniter', '着火器', 'igniter'], ['electro', '簡易電解板', 'electro'], ['proc', '循環装置', 'proc'], ['pump', 'ポンプ', 'pump']];
+const ERASE_OBJS: [string, string, keyof Inventory | null][] = [['rotor', '回転モーター', 'rotor'], ['piston', 'ピストン', 'piston'], ['rect', '可動板', 'plate'], ['circle', '可動円盤', 'plate'], ['heater', 'ヒーター', 'heater'], ['cooler', 'クーラー', 'cooler'], ['igniter', '着火器', 'igniter'], ['electro', '簡易電解板', 'electro'], ['proc', '循環装置', 'proc'], ['pump', 'ポンプ', 'pump']];
 const ERASE_KEY = 'shizuku-alchemy-eraser';
 type EraseMode = 'brush' | 'rect' | 'lasso';
 let eraseOff = new Set<number>(); let eraseObjs: Record<string, boolean> = {}; let eraseMode: EraseMode = 'brush';
@@ -203,6 +202,14 @@ function buildEraser() {
 }
 /** 範囲消し（矩形・投げ縄）のドラッグ */
 let region: { mode: EraseMode; pts: [number, number][] } | null = null;
+// ---------- 描き方（自由・直線・矩形）：セルを塗る道具すべてで共通 ----------
+type DrawMode = 'free' | 'line' | 'rect';
+let drawMode: DrawMode = (localStorage.getItem('shizuku-alchemy-drawmode') as DrawMode) || 'free';
+const isPaintTool = (t: Tool) => t === 'wall' || t === 'guide' || t === 'filter' || t === 'air' || t.startsWith('mat:');
+let shapeStart: [number, number] | null = null;
+function drawModeHTML() {
+  return `<div class="drawmode"><div class="muted">描き方（壁・膜・ガイド・物質）</div><div class="seg" id="dmode">${([['free', '✏ 自由'], ['line', '／ 直線'], ['rect', '▭ 矩形']] as const).map(([k, n]) => `<button data-d="${k}" class="${drawMode === k ? 'on' : ''}" title="${k === 'free' ? 'ドラッグした通りに描く' : k === 'line' ? '始点から終点へ、筆の太さでまっすぐ' : '2点を角にした長方形を塗りつぶす'}">${n}</button>`).join('')}</div></div>`;
+}
 
 // ---------- 自由実験室の大きさ ----------
 const LAB_SIZE = 'shizuku-alchemy-lab-size';
@@ -287,6 +294,8 @@ function availableTools(): ToolDef[] {
 }
 function buildPalette() {
   const box = $('#palette'); box.innerHTML = '';
+  box.insertAdjacentHTML('beforeend', drawModeHTML());
+  box.querySelectorAll<HTMLButtonElement>('[data-d]').forEach((b) => b.onclick = () => { drawMode = b.dataset.d as DrawMode; localStorage.setItem('shizuku-alchemy-drawmode', drawMode); buildPalette(); toast(drawMode === 'free' ? '自由に描く' : drawMode === 'line' ? '直線で描く（ドラッグで始点→終点）' : '矩形で塗る（ドラッグで角→角）'); });
   const tools = availableTools();
   let key = 1;
   const learned = new Set(prog.learned);
@@ -389,24 +398,20 @@ function renderObjPanel(box: HTMLElement, body: HTMLElement) {
     html = `<div class="gl"><b>${dev.name}</b></div><div class="muted">位置 (${dev.x}, ${dev.y}) ・ ドラッグで移動（費用はかからない）</div>`;
     if (proc) {
       html += `<div class="muted">${PROCESSES[proc.mode].desc}</div><div class="ports">${(['入口', '出口', '補助口'] as const).map((nm, k) => `<button class="mini ${kind === 'port' && ['in', 'out', 'aux'][k] === b ? 'on' : ''}" data-port="${['in', 'out', 'aux'][k]}">${nm} (${proc.ports[k][0] > 0 ? '+' : ''}${proc.ports[k][0]}, ${proc.ports[k][1] > 0 ? '+' : ''}${proc.ports[k][1]})</button>`).join('')}</div>
-        <div class="muted">ポートの丸をドラッグすると、装置のまわり（半径 ${proc.size * 4} セル）に動かせる</div>
+        <div class="muted">ポートの丸をドラッグすると、盤面のどこへでも動かせる（装置・壁の上は不可）</div>
         ${proc.moved ? '<button class="btn" data-resetport="1">↺ ポートを元の位置に</button>' : ''}`;
     }
-  } else if (kind === 'v' && st?.voids.find((v) => v.uid === uid)) {
-    const v = st!.voids.find((q) => q.uid === uid)!;
-    html = `<div class="gl"><b>${v.name}</b></div><div class="muted">範囲 (${v.x}, ${v.y}) ${v.w}×${v.h} セル ・ 入った流体・粉体を消す<br>選択ツールでドラッグして移動、消しゴムで消せる</div><button class="btn danger" data-delvoid="1">🗑 削除</button>`;
   } else if ((kind === 'p' || kind === 'pe') && pump) {
     html = `<div class="gl"><b>${pump.name}</b></div><div class="muted">吸込口 (${pump.ax}, ${pump.ay}) → 吐出口 (${pump.bx}, ${pump.by})<br>口をドラッグで片方、線の途中ではなく口の丸をつかむ</div>`;
   }
   if (!html) { box.style.display = 'none'; return; }
   box.style.display = ''; body.innerHTML = html;
   body.querySelectorAll<HTMLButtonElement>('[data-port]').forEach((x) => x.onclick = () => setSel(`port:${uid}:${x.dataset.port}`));
-  body.querySelectorAll<HTMLButtonElement>('[data-delvoid]').forEach((x) => x.onclick = async () => { const v = st!.voids.find((q) => q.uid === uid)!; await op('pushUndo'); await op('removeVoid', v.uid); setSel(''); });
   body.querySelectorAll<HTMLButtonElement>('[data-resetport]').forEach((x) => x.onclick = async () => { await op('pushUndo'); await op('resetPorts', uid); renderNodePanel(); });
 }
 
 /** 配置物ツリー（親子・折りたたみ・選択の同期） */
-const TREE_ICON: Record<string, string> = { rotor: '⟳', piston: '⇕', rect: '▬', circle: '●', heater: '🔥', cooler: '❄', igniter: '✦', electro: '⚡', proc: '⚗', port: '◇', pump: '⛲', pumpEnd: '○', void: '◼' };
+const TREE_ICON: Record<string, string> = { rotor: '⟳', piston: '⇕', rect: '▬', circle: '●', heater: '🔥', cooler: '❄', igniter: '✦', electro: '⚡', proc: '⚗', port: '◇', pump: '⛲', pumpEnd: '○' };
 function renderTree() {
   const el = document.getElementById('tree'); if (!el || !st || treeDrag) return;
   const sig = JSON.stringify(st.tree) + selKey + [...treeClosed].join();
@@ -559,7 +564,8 @@ canvas.addEventListener('pointerdown', async (e) => {
   erasing = e.button === 2 || tool === 'erase';
   const c = toCell(e.clientX, e.clientY);
   if (erasing && eraseMode !== 'brush') { region = { mode: eraseMode, pts: [c] }; return; }
-  if (!erasing && (tool === 'plate' || tool === 'piston' || tool === 'void')) { dragStart = c; return; }
+  if (!erasing && drawMode !== 'free' && isPaintTool(tool) && !e.shiftKey) { shapeStart = c; return; }
+  if (!erasing && (tool === 'plate' || tool === 'piston')) { dragStart = c; return; }
   if (!erasing && (tool === 'select' || e.shiftKey)) {
     // 選択中のピストンの◇（最大まで伸びた先）をつかむとストローク変更
     const sn = st?.nodes.find((q) => q.id === selected);
@@ -597,6 +603,7 @@ canvas.addEventListener('pointermove', async (e) => {
     return;
   }
   if (panning && prev) { cam.x += (e.clientX - prev.x) * dpr; cam.y += (e.clientY - prev.y) * dpr; return; }
+  if (shapeStart && pointers.size === 1) return;
   if (region && pointers.size === 1) {
     const c = hover, r = region;
     if (r.mode === 'rect') r.pts = [r.pts[0], c];
@@ -637,11 +644,8 @@ const endPointer = async (e: PointerEvent) => {
   if (dragStart && pointers.size === 0) {
     const a = dragStart, b = toCell(e.clientX, e.clientY); dragStart = null;
     await op('pushUndo');
-    if (tool === 'void') {
-      const uid = await op<number>('addVoid', a[0], a[1], b[0], b[1]);
-      if (uid) { feedback(b); setSel(`v:${uid}`); toast('消滅穴を置いた（入った流体・粉体が消える）'); }
-    } else if (tool === 'plate') {
-      const id = await op<number>('addPlate', a[0], a[1], b[0], b[1], Math.max(2, Math.round((brush + 1) / 2)));
+    if (tool === 'plate') {
+      const id = await op<number>('addPlate', a[0], a[1], b[0], b[1], Math.max(2, brush + 1));
       if (id) { feedback(b); selected = id; const n = st?.nodes.find((q) => q.id === id); toast(n?.parent ? '可動板を親に付けた' : '可動板を置いた（固定点）'); } else toast('可動板の材料が足りない');
     } else {
       const far = Math.hypot(b[0] - a[0], b[1] - a[1]) >= 4;
@@ -649,6 +653,13 @@ const endPointer = async (e: PointerEvent) => {
       if (id) { feedback(b); selected = id; toast('ピストンを置いた（先端に板やモーターを付けよう）'); } else toast('ピストンが足りない');
     }
     renderNodePanel(); hud();
+  }
+  if (shapeStart && pointers.size === 0) {
+    const a = shapeStart, b = toCell(e.clientX, e.clientY); shapeStart = null;
+    await op('pushUndo');
+    const ok = drawMode === 'line' ? await op<boolean>('stroke', tool, a[0], a[1], b[0], b[1], false) : await op<boolean>('fillRect', tool, a[0], a[1], b[0], b[1]);
+    if (ok) { feedback(b); blip(480, 0.04); } else { await op('undo'); toast(st && !sandbox ? 'ここには描けない（材料切れ・すき間なし）' : 'ここには描けない'); }
+    hud();
   }
   if (region && pointers.size === 0) {
     const r = region; region = null;
@@ -867,16 +878,7 @@ function draw(now: number) {
     drawPort(pp.x, pp.y, '#ff9d5c', '吸');
     if (hover[0] >= 0) { ctx.strokeStyle = '#9dffb866'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo((pp.x + 0.5) * S, (pp.y + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke(); ctx.setLineDash([]); }
   }
-  // 自由実験室の消滅穴と、外周（見えない境界）
-  for (const v of st.voids) {
-    const on = selKey === `v:${v.uid}`;
-    const grd = ctx.createLinearGradient(0, v.y * S, 0, (v.y + v.h) * S);
-    grd.addColorStop(0, '#ff2d6acc'); grd.addColorStop(1, '#ff2d6a55');
-    ctx.fillStyle = grd; ctx.fillRect(v.x * S, v.y * S, v.w * S, v.h * S);
-    ctx.save(); ctx.strokeStyle = on ? '#fff' : '#ff6d94'; ctx.lineWidth = (on ? 2.5 : 1.2) * dpr; ctx.setLineDash(on ? [4 * dpr, 3 * dpr] : []); ctx.lineDashOffset = -now / 40;
-    ctx.strokeRect(v.x * S, v.y * S, v.w * S, v.h * S); ctx.restore();
-    if (on || S * sc > 4) { ctx.font = `bold ${10 * dpr}px system-ui`; ctx.fillStyle = '#ffb3c6'; ctx.fillText(v.name, v.x * S, v.y * S - 4 * dpr); }
-  }
+  // 外周（見えない境界）
   if (sandbox) { ctx.save(); ctx.strokeStyle = '#ffffff22'; ctx.setLineDash([3 * dpr, 5 * dpr]); ctx.lineWidth = 1 * dpr; ctx.strokeRect(S * 0.5, S * 0.5, (st.w - 1) * S, (st.h - 1) * S); ctx.restore(); }
   // 選択中の装置・ポンプ
   for (const d of st.devices) if (selKey === `d:${d.uid}` && d.kind !== 'proc') {
@@ -959,6 +961,15 @@ function draw(now: number) {
       }
     }
   }
+  // 直線・矩形のプレビュー（筆の太さ）
+  if (shapeStart && hover[0] >= 0) {
+    const tdef = TOOLS.find((t) => t.tool === tool); const col = tdef?.color ?? '#fff';
+    const isMat = tool.startsWith('mat:') || tool === 'air', th = isMat ? (2 * brush + 3) : brush + 1, off = isMat ? 0.5 : (brush >> 1) - (brush + 1) / 2 + 0.5;
+    ctx.save(); ctx.globalAlpha = 0.6; ctx.strokeStyle = col; ctx.fillStyle = col;
+    if (drawMode === 'line') { ctx.lineWidth = th * S; ctx.lineCap = isMat ? 'round' : 'square'; ctx.beginPath(); ctx.moveTo((shapeStart[0] + 0.5) * S, (shapeStart[1] + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke(); }
+    else { const x0 = Math.min(shapeStart[0], hover[0]), y0 = Math.min(shapeStart[1], hover[1]); ctx.fillRect((x0 - (isMat ? brush + 1 : 0)) * S, (y0 - (isMat ? brush + 1 : 0)) * S, (Math.abs(hover[0] - shapeStart[0]) + (isMat ? 2 * brush + 3 : brush + 1)) * S, (Math.abs(hover[1] - shapeStart[1]) + (isMat ? 2 * brush + 3 : brush + 1)) * S); }
+    ctx.restore(); void off;
+  }
   // 範囲消しの枠
   if (region && region.pts.length) {
     ctx.save(); ctx.strokeStyle = '#ff8a8a'; ctx.fillStyle = '#ff8a8a22'; ctx.lineWidth = 2 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]); ctx.lineDashOffset = -now / 30;
@@ -969,8 +980,7 @@ function draw(now: number) {
   }
   // ドラッグ中の板・ピストン
   if (dragStart && hover[0] >= 0) {
-    ctx.strokeStyle = tool === 'plate' ? css(M.MOVER) : tool === 'void' ? '#ff2d6a' : '#ffd27a'; ctx.lineWidth = Math.max(2, L); ctx.globalAlpha = 0.7;
-    if (tool === 'void') { ctx.fillStyle = '#ff2d6a55'; const x0 = Math.min(dragStart[0], hover[0]), y0 = Math.min(dragStart[1], hover[1]); ctx.fillRect(x0 * S, y0 * S, (Math.abs(hover[0] - dragStart[0]) + 1) * S, (Math.abs(hover[1] - dragStart[1]) + 1) * S); }
+    ctx.strokeStyle = tool === 'plate' ? css(M.MOVER) : '#ffd27a'; ctx.lineWidth = Math.max(2, L); ctx.globalAlpha = 0.7;
     ctx.beginPath(); ctx.moveTo((dragStart[0] + 0.5) * S, (dragStart[1] + 0.5) * S); ctx.lineTo((hover[0] + 0.5) * S, (hover[1] + 0.5) * S); ctx.stroke();
     ctx.globalAlpha = 1;
   }

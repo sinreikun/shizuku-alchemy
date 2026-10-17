@@ -117,7 +117,8 @@ describe('ピストンのストロークとポート', () => {
     g.setPort(p.uid!, 'in', 0, 0);
     const [dx, dy] = [p.ports![0], p.ports![1]];
     expect(Math.max(Math.abs(dx), Math.abs(dy))).toBeGreaterThan(p.size / 2);
-    g.setPort(p.uid!, 'aux', 999, 0); expect(p.ports![4]).toBe(p.size * 4);
+    expect(g.setPort(p.uid!, 'aux', 9999, 0)).toBe(false); // 盤面の外
+    expect(g.setPort(p.uid!, 'aux', 200, 100)).toBe(true); expect(p.ports![4]).toBe(200); // 遠くても置ける
     // 実際に出口の新しい位置から水素が出る
     g.setPort(p.uid!, 'in', -10, 0);
     for (let y = p.y - 4; y <= p.y + 4; y++) for (let x = p.x - 12; x < p.x - 4; x++) g.sim.set(x, y, M.WATER);

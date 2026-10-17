@@ -2,9 +2,9 @@
 export const enum M {
   EMPTY, WALL, PWALL, WATER, STEAM, ICE, OIL, SMOKE, LAVA, ROCK, MERCURY, HYDROGEN, HEATER, COOLER,
   SALT, BRINE, OXYGEN, CO2, FIRE, SOOT, IGNITER, ELECTRO, FILTER, SAND, GLASS, HGVAPOR, NITROGEN,
-  GUIDE, MOVER, PROCESSOR, ACTIVATOR, COMPOSITE, SOLVENT, SOLVAPOR, EXTRACT, LOADED,
+  GUIDE, MOVER, PROCESSOR, ACTIVATOR, COMPOSITE, SOLVENT, SOLVAPOR, EXTRACT, LOADED, VOID,
 }
-export const MAT_COUNT = 36;
+export const MAT_COUNT = 37;
 
 export type Kind = 'none' | 'static' | 'liquid' | 'gas' | 'powder' | 'device';
 export interface MatDef {
@@ -50,6 +50,7 @@ MATS[M.COMPOSITE] = D('複合結晶', 7.5, 'powder', 0, [190, 140, 255], 20, 0.3
 MATS[M.SOLVENT] = D('揮発溶媒', 3, 'liquid', 6, [140, 230, 200], 20, 0.2, '液体', '65℃で蒸発し、55℃以下で凝縮する低沸点の液体。');
 MATS[M.SOLVAPOR] = D('溶媒蒸気', -2.5, 'gas', 3, [170, 240, 220], 70, 0.01, '気体', '55℃以下で揮発溶媒に戻る。');
 MATS[M.EXTRACT] = D('抽出液', 6, 'liquid', 3, [240, 110, 60], 20, 0.15, '液体', '水と混ざらない重い液体。晶塩を運び、回収後に再利用できる。');
+MATS[M.VOID] = D('消滅穴', 99, 'static', 0, [255, 45, 106], 20, 0, '固体', '触れた流体・粉体を消す赤い穴（ステージの赤い穴と同じ）。', 0.5);
 MATS[M.LOADED] = D('晶塩入り抽出液', 6.5, 'liquid', 3, [250, 180, 90], 20, 0.15, '液体', '晶塩を取り込んだ抽出液。回収器で分離できる。');
 MATS[M.NITROGEN] = D('窒素', -1, 'gas', 4, [70, 80, 120], 20, 0.06, '気体', '空気の大部分。反応しない。');
 
@@ -94,10 +95,10 @@ export function portOffset(p: Processor, port: PortName): [number, number] {
   if (p.ports) { const k = PORT_IX[port]; return [p.ports[k], p.ports[k + 1]]; }
   return defaultPortOffset(p.size, port);
 }
-/** ポートを置ける位置に収める：装置に重ならず、中心から半径 4×大きさ 以内 */
+/** ポートを置ける位置に収める：装置に重ならないこと（距離の上限はない。盤面の外は呼び出し側で弾く） */
 export function clampPortOffset(size: number, dx: number, dy: number): [number, number] {
-  const h = size >> 1, d = Math.max(2, h), R = size * 4;
-  dx = Math.round(Math.max(-R, Math.min(R, dx))); dy = Math.round(Math.max(-R, Math.min(R, dy)));
+  const h = size >> 1, d = Math.max(2, h);
+  dx = Math.round(dx); dy = Math.round(dy);
   const minC = h + (d + 1) / 2;
   if (Math.max(Math.abs(dx), Math.abs(dy)) < minC) {
     if (Math.abs(dx) >= Math.abs(dy)) dx = (dx < 0 ? -1 : 1) * Math.ceil(minC); else dy = (dy < 0 ? -1 : 1) * Math.ceil(minC);

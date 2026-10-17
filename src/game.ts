@@ -5,7 +5,7 @@ import { Mech, newNode, JOINT_NAMES, type MechNode } from './mech';
 /** 置いた物の名前の元になる呼び名 */
 export const OBJ_LABEL: Record<string, string> = {
   rotor: '回転モーター', piston: 'ピストン', rect: '可動板', circle: '可動円盤',
-  void: '消滅穴', heater: 'ヒーター', cooler: 'クーラー', igniter: '着火器', electro: '簡易電解板', pump: 'ポンプ',
+  heater: 'ヒーター', cooler: 'クーラー', igniter: '着火器', electro: '簡易電解板', pump: 'ポンプ',
 };
 /** 配置物ツリーの1項目。key は 'n:<機構id>' 'd:<装置uid>' 'p:<ポンプuid>' 'pe:<uid>:a|b' 'port:<uid>:in|out|aux' */
 export interface TreeItem { key: string; name: string; kind: string; sub?: string; fixed?: boolean; children: TreeItem[] }
@@ -15,7 +15,7 @@ const PORTS: PortName[] = ['in', 'out', 'aux'];
 export const SCALE = 2;
 
 export type Tool = 'wall' | 'erase' | 'heater' | 'cooler' | 'igniter' | 'electro' | 'filter' | 'pump' | 'air' | 'guide'
-  | 'rotor' | 'piston' | 'plate' | 'disc' | 'select' | 'void' | `proc:${ProcessMode}` | `mat:${number}`;
+  | 'rotor' | 'piston' | 'plate' | 'disc' | 'select' | `proc:${ProcessMode}` | `mat:${number}`;
 export type DeviceTool = 'heater' | 'cooler' | 'igniter' | 'electro';
 export const DEVICE_MAT: Record<DeviceTool, number> = { heater: M.HEATER, cooler: M.COOLER, igniter: M.IGNITER, electro: M.ELECTRO };
 export const isDeviceTool = (t: string) => t in DEVICE_MAT || t.startsWith('proc:');
@@ -64,7 +64,6 @@ export interface Level {
   limit?: number;
 }
 
-export interface VoidZone extends Rect { uid: number; name: string }
 export interface Device { kind: DeviceTool | 'proc'; x: number; y: number; mode?: ProcessMode; uid?: number; name?: string }
 
 const replaceable = (o: number, sandbox: boolean, devices = false) => {
@@ -84,8 +83,9 @@ export class Game {
   inv: Inventory;
   invBase: Inventory;
   devices: Device[] = [];
-  /** 自由実験室で置いた消滅穴（赤い穴：入った流体・粉体を消す） */
-  voids: VoidZone[] = [];
+  /** 消滅穴セル（自由実験室）の一覧。描き変えたら作り直す */
+  private voidCells: number[] = [];
+  voidDirty = true;
   sources: Source[]; goals: Goal[]; drains: Rect[];
   emitted: number[] = [];
   progress: number[] = [];
@@ -154,7 +154,7 @@ export class Game {
     this.flowing = this.sandbox;
     if (!keepBuild) {
       this.inv = { ...this.invBase };
-      this.devices = []; this.voids = [];
+      this.devices = [];
       this.mech.nodes = []; this.mech.nextId = 1; this.fixedNodes.clear();
       if (level.mech) { level.mech(this); for (const n of this.mech.nodes) this.fixedNodes.add(n.id); }
       this.mech.computePoses(); this.mech.rasterize();
@@ -168,13 +168,13 @@ export class Game {
   }
 
   private snap() {
-    return { sim: this.sim.snapshot(), inv: { ...this.inv }, devices: this.devices.map((d) => ({ ...d })), voids: this.voids.map((v) => ({ ...v })), nodes: this.mech.serialize(), nextId: this.mech.nextId };
+    return { sim: this.sim.snapshot(), inv: { ...this.inv }, devices: this.devices.map((d) => ({ ...d })), nodes: this.mech.serialize(), nextId: this.mech.nextId };
   }
   pushUndo() { this.undoStack.push(this.snap()); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
   undo() { const s = this.undoStack.pop(); if (!s) return false; this.redoStack.push(this.snap()); this.load(s); return true; }
   redo() { const s = this.redoStack.pop(); if (!s) return false; this.undoStack.push(this.snap()); this.load(s); return true; }
   private load(s: ReturnType<Game['snap']>) {
-    this.sim.restore(s.sim); this.inv = { ...s.inv }; this.devices = s.devices.map((d) => ({ ...d })); this.voids = s.voids.map((v) => ({ ...v }));
+    this.sim.restore(s.sim); this.inv = { ...s.inv }; this.devices = s.devices.map((d) => ({ ...d })); this.voidDirty = true;
     this.mech.nodes = s.nodes.map((n) => ({ ...n })); this.mech.nextId = s.nextId; this.mech.computePoses(); this.mech.relink();
   }
   get canUndo() { return this.undoStack.length > 0; }
@@ -185,6 +185,7 @@ export class Game {
 
   /** 1点への道具の適用（実セル座標）。戻り値は変化したか */
   apply(tool: Tool, x: number, y: number, erase = false): boolean {
+    if (this.sandbox) this.voidDirty = true;
     const s = this.sim, S = this.S;
     if (erase || tool === 'erase') return this.eraseAt(x, y);
     if (tool === 'wall' || tool === 'guide') {
@@ -200,11 +201,12 @@ export class Game {
       return ch;
     }
     if (tool === 'filter') {
-      let ch = false;
-      for (let j = 0; j < 2 * S; j++) for (let i = 0; i < 2 * S; i++) {
+      // 壁と同じく筆の太さの正方形（ステージの論理筆1 = 2S 四方で従来と同じ）
+      let ch = false; const r = this.brush;
+      for (let j = 0; j < r + 1; j++) for (let i = 0; i < r + 1; i++) {
         if (this.inv.filter <= 0) return ch;
-        const o = s.get(x + i, y + j);
-        if (replaceable(o, this.sandbox)) { s.set(x + i, y + j, M.FILTER, this.filterMat); this.inv.filter--; ch = true; }
+        const cx = x + i - (r >> 1), cy = y + j - (r >> 1), o = s.get(cx, cy);
+        if (replaceable(o, this.sandbox)) { s.set(cx, cy, M.FILTER, this.filterMat); this.inv.filter--; ch = true; }
       }
       return ch;
     }
@@ -217,7 +219,7 @@ export class Game {
     if (tool === 'rotor') return !!this.addRotor(x, y);
     if (tool === 'piston') return !!this.addPiston(x, y, x, y - 15 * S);
     if (tool === 'disc') return !!this.addDisc(x, y, (this.brush + 3) * 0.5 + S);
-    if (tool === 'plate' || tool === 'select' || tool === 'void') return false;
+    if (tool === 'plate' || tool === 'select') return false;
     if (tool.startsWith('proc:') || tool in DEVICE_MAT) {
       const isProc = tool.startsWith('proc:');
       const key: keyof Inventory = isProc ? 'proc' : (tool as DeviceTool);
@@ -340,7 +342,7 @@ export class Game {
     }
     for (const p of this.sim.processors) { if (p.uid === undefined) p.uid = this.nextUid++; if (!p.name) p.name = this.newName(PROCESSES[p.mode].name); }
     for (const p of this.sim.pumps) { if (p.uid === undefined) p.uid = this.nextUid++; if (!p.name) p.name = this.newName(OBJ_LABEL.pump); }
-    const ids = [...this.devices.map((d) => d.uid!), ...this.sim.processors.map((p) => p.uid!), ...this.sim.pumps.map((p) => p.uid!), ...this.voids.map((v) => v.uid)];
+    const ids = [...this.devices.map((d) => d.uid!), ...this.sim.processors.map((p) => p.uid!), ...this.sim.pumps.map((p) => p.uid!)];
     this.nextUid = Math.max(this.nextUid, ...ids.map((u) => u + 1));
   }
 
@@ -356,7 +358,6 @@ export class Game {
       key: `d:${d.uid}`, name: d.name ?? '', kind: d.kind, sub: d.kind === 'proc' ? '循環装置' : '装置',
       children: d.kind === 'proc' ? PORTS.map((pn) => ({ key: `port:${d.uid}:${pn}`, name: PORT_NAMES[pn], kind: 'port', children: [] })) : [],
     });
-    for (const v of this.voids) out.push({ key: `v:${v.uid}`, name: v.name, kind: 'void', sub: `${v.w}×${v.h}`, children: [] });
     for (const p of this.sim.pumps) out.push({
       key: `p:${p.uid}`, name: p.name ?? '', kind: 'pump', sub: 'ポンプ',
       children: [{ key: `pe:${p.uid}:a`, name: '吸込口', kind: 'pumpEnd', children: [] }, { key: `pe:${p.uid}:b`, name: '吐出口', kind: 'pumpEnd', children: [] }],
@@ -382,7 +383,6 @@ export class Game {
     const n = this.mech.nodeAt(x, y, 4 * S); if (n) return `n:${n.id}`;
     const [a, b] = this.devRange();
     const d = this.devices.find((q) => x - q.x >= a && x - q.x <= b && y - q.y >= a && y - q.y <= b);
-    if (!d) { const v = this.voids.find((q) => x >= q.x && y >= q.y && x < q.x + q.w && y < q.y + q.h); if (v) return `v:${v.uid}`; }
     return d ? `d:${d.uid}` : '';
   }
 
@@ -393,11 +393,6 @@ export class Game {
     const [kind, a, b] = key.split(':'); const id = Number(a);
     if (kind === 'n') return this.moveNode(id, dx, dy);
     if (kind === 'd') return this.moveDevice(id, dx, dy);
-    if (kind === 'v') {
-      const v = this.voids.find((q) => q.uid === id); if (!v) return false;
-      if (!this.sim.inside(v.x + dx, v.y + dy) || !this.sim.inside(v.x + v.w - 1 + dx, v.y + v.h - 1 + dy)) return false;
-      v.x += dx; v.y += dy; return true;
-    }
     if (kind === 'p' || kind === 'pe') {
       const p = this.sim.pumps.find((q) => q.uid === id); if (!p) return false;
       const ends: ('a' | 'b')[] = kind === 'p' ? ['a', 'b'] : [b as 'a' | 'b'];
@@ -467,7 +462,10 @@ export class Game {
   setPort(uid: number, port: PortName, dx: number, dy: number) {
     const p = this.sim.processors.find((q) => q.uid === uid); if (!p) return false;
     const [cx, cy] = clampPortOffset(p.size, dx, dy);
-    if (!this.sim.inside(Math.round(p.x + cx), Math.round(p.y + cy))) return false;
+    const px = Math.round(p.x + cx), py = Math.round(p.y + cy);
+    if (!this.sim.inside(px, py)) return false;
+    // 中心が壁・装置の中には置けない
+    const o = this.sim.t[py * this.sim.w + px]; if (o === M.WALL || o === M.PWALL || KIND[o] === 5) return false;
     if (!p.ports) p.ports = PORTS.flatMap((pn) => defaultPortOffset(p.size, pn));
     const k = PORTS.indexOf(port) * 2;
     if (p.ports[k] === cx && p.ports[k + 1] === cy) return false;
@@ -507,17 +505,30 @@ export class Game {
     s.set(cx, cy, M.EMPTY); return true;
   }
   isEdge(x: number, y: number) { return x <= 0 || y <= 0 || x >= this.sim.w - 1 || y >= this.sim.h - 1; }
-  /** 消滅穴を置く（自由実験室。矩形 (x0,y0)-(x1,y1)、最小 2S 四方） */
-  addVoid(x0: number, y0: number, x1: number, y1: number) {
-    if (!this.sandbox) return null;
-    const m = 2 * this.S;
-    let x = Math.min(x0, x1), y = Math.min(y0, y1), w = Math.abs(x1 - x0) + 1, h = Math.abs(y1 - y0) + 1;
-    if (w < m) { x -= (m - w) >> 1; w = m; } if (h < m) { y -= (m - h) >> 1; h = m; }
-    x = Math.max(1, Math.min(x, this.sim.w - 1 - w)); y = Math.max(1, Math.min(y, this.sim.h - 1 - h));
-    const v: VoidZone = { x, y, w, h, uid: this.nextUid++, name: this.newName(OBJ_LABEL.void) };
-    this.voids.push(v); return v;
+  /** 消滅穴セル：となりに来た流体・粉体を消す（ステージの赤い穴と同じ働き） */
+  private runVoids() {
+    const sim = this.sim, t = sim.t, w = sim.w;
+    if (this.voidDirty) { this.voidCells = []; for (let i = 0; i < sim.n; i++) if (t[i] === M.VOID) this.voidCells.push(i); this.voidDirty = false; }
+    for (const i of this.voidCells) {
+      if (t[i] !== M.VOID) { this.voidDirty = true; continue; }
+      for (const j of [i - w, i + w, i - 1, i + 1]) { if (j < 0 || j >= sim.n) continue; const k = KIND[t[j]]; if (k >= 2 && k <= 4) { t[j] = M.EMPTY; sim.wake(j); } }
+    }
   }
-  removeVoid(uid: number) { const k = this.voids.findIndex((v) => v.uid === uid); if (k < 0) return false; this.voids.splice(k, 1); return true; }
+  /** 旧版（v0.6）の消滅穴（矩形の物）を消滅穴セルに変換する */
+  importVoids(rects: { x: number; y: number; w: number; h: number }[], k = 1) {
+    const s = this.sim;
+    for (const v of rects) for (let y = v.y * k; y < (v.y + v.h) * k; y++) for (let x = v.x * k; x < (v.x + v.w) * k; x++) if (s.inside(x, y) && !this.isEdge(x, y)) s.set(x, y, M.VOID);
+    this.voidDirty = true;
+  }
+  /** 矩形で塗る（筆の太さの刻みで行を重ねるので隙間なく埋まる） */
+  fillRect(tool: Tool, x0: number, y0: number, x1: number, y1: number) {
+    const xa = Math.min(x0, x1), xb = Math.max(x0, x1), ya = Math.min(y0, y1), yb = Math.max(y0, y1);
+    const step = tool.startsWith('mat:') || tool === 'air' ? Math.max(1, this.brush) : Math.max(1, this.brush + 1);
+    const off = tool.startsWith('mat:') || tool === 'air' ? 0 : this.brush >> 1;
+    let ch = false;
+    for (let y = ya + off; y <= yb + off; y += step) ch = this.stroke(tool, xa + off, Math.min(y, yb + off), xb + off, Math.min(y, yb + off)) || ch;
+    return ch;
+  }
   private eraseAt(x: number, y: number): boolean {
     const s = this.sim, S = this.S; let ch = false;
     // 機構
@@ -531,7 +542,6 @@ export class Game {
     const [a, b] = this.devRange();
     const di = this.devices.findIndex((d) => this.objOk(d.kind) && x - d.x >= a && x - d.x <= b && y - d.y >= a && y - d.y <= b);
     if (di >= 0) { this.removeDevice(di); return true; }
-    if (this.objOk('void')) { const vi = this.voids.findIndex((q) => x >= q.x && y >= q.y && x < q.x + q.w && y < q.y + q.h); if (vi >= 0) { this.voids.splice(vi, 1); return true; } }
     const r = this.brush + 1;
     for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) {
       if (i * i + j * j > r * r) continue;
@@ -541,6 +551,7 @@ export class Game {
   }
   /** 範囲で消す（矩形・投げ縄）。poly は [x0,y0,x1,y1,...]（実セル） */
   eraseRegion(poly: number[]): number {
+    this.voidDirty = true;
     if (poly.length < 6) return 0;
     const xs = poly.filter((_, k) => k % 2 === 0), ys = poly.filter((_, k) => k % 2 === 1);
     const x0 = Math.max(0, Math.floor(Math.min(...xs))), x1 = Math.min(this.sim.w - 1, Math.ceil(Math.max(...xs)));
@@ -559,7 +570,6 @@ export class Game {
     }
     if (this.objOk('pump')) for (let k = this.sim.pumps.length - 1; k >= 0; k--) { const p = this.sim.pumps[k]; if (inside(p.ax + 0.5, p.ay + 0.5) || inside(p.bx + 0.5, p.by + 0.5)) { this.sim.pumps.splice(k, 1); this.inv.pump++; count++; } }
     for (let k = this.devices.length - 1; k >= 0; k--) { const d = this.devices[k]; if (this.objOk(d.kind) && inside(d.x + 0.5, d.y + 0.5)) { this.removeDevice(k); count++; } }
-    if (this.objOk('void')) for (let k = this.voids.length - 1; k >= 0; k--) { const v = this.voids[k]; if (inside(v.x + v.w / 2, v.y + v.h / 2)) { this.voids.splice(k, 1); count++; } }
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (inside(x + 0.5, y + 0.5) && this.eraseCell(x, y)) count++;
     return count;
   }
@@ -575,6 +585,7 @@ export class Game {
 
   /** 線分で道具を適用 */
   stroke(tool: Tool, x0: number, y0: number, x1: number, y1: number, erase = false) {
+    this.voidDirty = true;
     const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
     let ch = false;
     for (let k = 0; k <= n; k++) ch = this.apply(tool, Math.round(x0 + ((x1 - x0) * k) / n), Math.round(y0 + ((y1 - y0) * k) / n), erase) || ch;
@@ -589,8 +600,8 @@ export class Game {
   lapply(tool: Tool, x: number, y: number, erase = false, b = 1): boolean {
     const S = this.S;
     return this.withBrush(b, () => {
-      if (tool === 'wall' || tool === 'guide') { const r = this.brush; return this.apply(tool, (x - (b >> 1)) * S + (r >> 1), (y - (b >> 1)) * S + (r >> 1)); }
-      if (tool === 'filter' || isDeviceTool(tool) || tool === 'pump') return this.apply(tool, x * S, y * S, erase);
+      if (tool === 'wall' || tool === 'guide' || tool === 'filter') { const r = this.brush; return this.apply(tool, (x - (b >> 1)) * S + (r >> 1), (y - (b >> 1)) * S + (r >> 1)); }
+      if (isDeviceTool(tool) || tool === 'pump') return this.apply(tool, x * S, y * S, erase);
       return this.apply(tool, x * S + (S >> 1), y * S + (S >> 1), erase);
     });
   }
@@ -623,7 +634,8 @@ export class Game {
         });
       }
       sim.step();
-      for (const d of this.voids.length ? [...this.drains, ...this.voids] : this.drains) for (let y = d.y; y < d.y + d.h; y++) for (let x = d.x; x < d.x + d.w; x++) {
+      if (this.sandbox) this.runVoids();
+      for (const d of this.drains) for (let y = d.y; y < d.y + d.h; y++) for (let x = d.x; x < d.x + d.w; x++) {
         const i = y * sim.w + x; const m = sim.t[i]; const k = KIND[m]; if (k >= 2 && k <= 4) { sim.t[i] = M.EMPTY; sim.wake(i); }
       }
       this.goals.forEach((g, k) => {
@@ -697,7 +709,6 @@ export function resizeLab(old: Game, level: Level, ax: number, ay: number, seed 
   g.devices = old.devices.filter((d) => inn(d.x + dx + a, d.y + dy + a) && inn(d.x + dx + b, d.y + dy + b)).map((d) => ({ ...d, x: d.x + dx, y: d.y + dy }));
   const keepUid = new Set(g.devices.map((d) => d.uid));
   ns.processors = os.processors.filter((p) => keepUid.has(p.uid)).map((p) => ({ ...p, x: p.x + dx, y: p.y + dy, ports: p.ports?.slice() }));
-  g.voids = old.voids.map((v) => ({ ...v, x: v.x + dx, y: v.y + dy })).filter((v) => inn(v.x, v.y) && inn(v.x + v.w - 1, v.y + v.h - 1));
   ns.pumps = os.pumps.filter((p) => inn(p.ax + dx, p.ay + dy) && inn(p.bx + dx, p.by + dy)).map((p) => ({ ...p, ax: p.ax + dx, ay: p.ay + dy, bx: p.bx + dx, by: p.by + dy, moved: 0 }));
   const nodes = old.mech.serialize().map((n) => (n.parent < 0 ? { ...n, ox: n.ox + dx, oy: n.oy + dy } : { ...n }));
   g.mech.nodes = []; g.mech.load(nodes);

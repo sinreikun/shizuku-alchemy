@@ -37,29 +37,32 @@ describe('自由実験室の外枠', () => {
   });
 });
 
-describe('消滅穴', () => {
-  it('置くと番号付きでツリーに並び、入った流体を消し、動かせて、消しゴムで消せる', () => {
+describe('消滅穴（セル）', () => {
+  it('筆で塗れて、触れた流体・粉体を消す。消しゴムで消せる。ツリーには出ない', () => {
     const g = lab();
-    const v = g.addVoid(100, 150, 140, 160)!;
-    const v2 = g.addVoid(200, 150, 201, 151)!;
-    expect([v.name, v2.name]).toEqual(['消滅穴#1', '消滅穴#2']);
-    expect(v2.w).toBe(2 * g.S);
-    expect(g.tree().filter((t) => t.kind === 'void').map((t) => t.key)).toEqual([`v:${v.uid}`, `v:${v2.uid}`]);
-    expect(g.pickObject(120, 155)).toBe(`v:${v.uid}`);
-    for (let y = 100; y < 140; y++) for (let x = 105; x < 135; x++) g.sim.set(x, y, M.WATER);
+    g.brush = 3; g.stroke(`mat:${M.VOID}` as never, 100, 160, 160, 160);
+    const vc = g.sim.count(M.VOID); expect(vc).toBeGreaterThan(60 * 4);
+    expect(g.tree().length).toBe(0);
+    for (let y = 100; y < 140; y++) for (let x = 105; x < 155; x++) g.sim.set(x, y, M.WATER);
+    for (let y = 90; y < 100; y++) for (let x = 105; x < 155; x++) g.sim.set(x, y, M.SAND);
     const w0 = g.sim.count(M.WATER);
     for (let k = 0; k < 300; k++) g.tick();
     expect(g.sim.count(M.WATER)).toBeLessThan(w0 * 0.5);
-    g.pushUndo();
-    expect(g.moveObject(`v:${v.uid}`, 10, -5)).toBe(true);
-    expect([v.x, v.y]).toEqual([110, 145]);
-    g.undo(); expect(g.voids.find((q) => q.uid === v.uid)!.x).toBe(100);
-    g.setEraseFilter(null, { void: false });
-    g.eraseRegion([90, 140, 150, 140, 150, 170, 90, 170]); expect(g.voids.length).toBe(2);
-    g.setEraseFilter(null, {});
-    g.eraseRegion([90, 140, 150, 140, 150, 170, 90, 170]); expect(g.voids.length).toBe(1);
-    const c = g.addVoid(10, 10, 20, 20)!; expect(c.name).toBe('消滅穴#3');
-    const n = resizeLab(g, labLevel(200, 120), 0, 0); expect(n.voids.length).toBe(2);
+    expect(g.sim.count(M.SAND)).toBeLessThan(500);
+    expect(g.sim.count(M.VOID)).toBe(vc);
+    g.setEraseFilter([M.VOID], {});
+    g.eraseRegion([90, 150, 170, 150, 170, 170, 90, 170]);
+    expect(g.sim.count(M.VOID)).toBe(0);
   });
-  it('ステージでは置けない', () => { const s = new Game(LEVELS[0], false, 1); expect(s.addVoid(10, 10, 20, 20)).toBeNull(); });
+  it('旧版の消滅穴（矩形の物）はセルに変換される', () => {
+    const g = lab(); g.importVoids([{ x: 50, y: 50, w: 10, h: 4 }]);
+    expect(g.sim.count(M.VOID)).toBe(40);
+    for (let y = 30; y < 50; y++) for (let x = 50; x < 60; x++) g.sim.set(x, y, M.WATER);
+    for (let k = 0; k < 200; k++) g.tick();
+    expect(g.sim.count(M.WATER)).toBeLessThan(100);
+  });
+  it('ステージには消滅穴セルがなく、赤い穴は今まで通り（矩形の排水）', () => {
+    const s = new Game(LEVELS[0], false, 1); expect(s.sim.count(M.VOID)).toBe(0); expect(s.drains.length).toBeGreaterThan(0);
+    void resizeLab;
+  });
 });
