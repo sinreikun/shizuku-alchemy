@@ -59,6 +59,10 @@ const isMovable = (k: Kind) => k === 'liquid' || k === 'gas' || k === 'powder';
 const KCODE: Record<Kind, number> = { none: 0, static: 1, liquid: 2, gas: 3, powder: 4, device: 5 };
 export const DENS = Float32Array.from(MATS, (d) => d.dens);
 export const KIND = Uint8Array.from(MATS, (d) => KCODE[d.kind]);
+const KG = KCODE.gas;
+/** 装置表面と気体の熱交換係数（1面あたり・1ティック） */
+export const DEV_GAS_H = 0.06;
+const GAS_W = 0.2;
 export const SPREAD = Uint8Array.from(MATS, (d) => d.spread);
 export const COND = Float32Array.from(MATS, (d) => d.cond);
 export const CH = 16; // チャンク（休眠判定）の大きさ
@@ -347,14 +351,25 @@ export class Sim {
         if (m === M.EMPTY) avg = (tp[i - 1] + tp[i + 1] + tp[i - w] + tp[i + w]) * 0.25;
         else {
           // 物質どうしの接触で熱を伝える（真空は断熱に近い）
-          let sum = 0, c = 0;
-          if (t[i - 1] > M.PWALL) { sum += tp[i - 1]; c++; }
-          if (t[i + 1] > M.PWALL) { sum += tp[i + 1]; c++; }
-          if (t[i - w] > M.PWALL) { sum += tp[i - w]; c++; }
-          if (t[i + w] > M.PWALL) { sum += tp[i + w]; c++; }
+          // 気体は熱容量が小さいので、液体・固体を温めたり冷やしたりする力は弱い（重み GAS_W）
+          let sum = 0, c = 0, q: number, wq: number;
+          const self = KIND[m] === KG;
+          q = t[i - 1]; if (q > M.PWALL) { wq = !self && KIND[q] === KG && q !== M.FIRE ? GAS_W : 1; sum += tp[i - 1] * wq; c += wq; }
+          q = t[i + 1]; if (q > M.PWALL) { wq = !self && KIND[q] === KG && q !== M.FIRE ? GAS_W : 1; sum += tp[i + 1] * wq; c += wq; }
+          q = t[i - w]; if (q > M.PWALL) { wq = !self && KIND[q] === KG && q !== M.FIRE ? GAS_W : 1; sum += tp[i - w] * wq; c += wq; }
+          q = t[i + w]; if (q > M.PWALL) { wq = !self && KIND[q] === KG && q !== M.FIRE ? GAS_W : 1; sum += tp[i + w] * wq; c += wq; }
           avg = c ? (sum + tp[i] * (4 - c)) * 0.25 : tp[i];
         }
         let v = tp[i] + (avg - tp[i]) * Math.min(1, def.cond * (m === M.EMPTY ? 0.3 : 0.5) * hk);
+        if (KIND[m] === KG && m !== M.FIRE) {
+          // 気体は装置の表面（放熱フィン）と強く熱をやり取りする：接している面の数と温度差に比例
+          let ds = 0, dn = 0, q: number;
+          q = t[i - 1]; if (q === M.HEATER || q === M.COOLER || q === M.IGNITER) { ds += tp[i - 1]; dn++; }
+          q = t[i + 1]; if (q === M.HEATER || q === M.COOLER || q === M.IGNITER) { ds += tp[i + 1]; dn++; }
+          q = t[i - w]; if (q === M.HEATER || q === M.COOLER || q === M.IGNITER) { ds += tp[i - w]; dn++; }
+          q = t[i + w]; if (q === M.HEATER || q === M.COOLER || q === M.IGNITER) { ds += tp[i + w]; dn++; }
+          if (dn) v += (ds / dn - v) * Math.min(0.6, DEV_GAS_H * dn * hk);
+        }
         v += (amb - v) * (m === M.EMPTY ? 0.08 : (m === M.STEAM ? 0.0006 : m === M.LAVA ? 0.00005 : m === M.FIRE ? 0.001 : 0.004) * ihk);
         const dv = v - tp[i];
         tp[i] = v;
