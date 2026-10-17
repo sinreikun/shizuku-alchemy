@@ -7,14 +7,15 @@ export interface NodeView {
   id: number; type: MechNode['type']; parent: number; joint: MechNode['joint']; on: boolean; speed: number; dir: number;
   amp: number; recip: boolean; k: number; x: number; y: number; a: number; tx: number; ty: number; bend: number; fixed: boolean; name: string; w: number; h: number; r: number; bx: number;
 }
-export interface ProcView { x: number; y: number; size: number; mode: ProcessMode; count: number; status: string; uid: number; name: string; moved: boolean; ports: [number, number][] }
-export interface DeviceView { uid: number; name: string; kind: string; x: number; y: number }
+export interface ProcView { x: number; y: number; size: number; mode: ProcessMode; count: number; status: string; uid: number; name: string; moved: boolean; ports: [number, number][]; rate: number; amt: number[]; roles: string[] }
+export interface DeviceView { uid: number; name: string; kind: string; x: number; y: number; power: number }
 export interface GameState {
   w: number; h: number; S: number;
   inv: Inventory; invBase: Inventory; progress: number[]; emitted: number[];
   flowing: boolean; won: boolean; ticks: number; canUndo: boolean; canRedo: boolean;
   pendingPump: { x: number; y: number } | null;
-  pumps: { ax: number; ay: number; bx: number; by: number; uid: number; name: string }[];
+  pumps: { ax: number; ay: number; bx: number; by: number; uid: number; name: string; rate: number; r: number }[];
+  canTune: boolean;
   devices: DeviceView[]; tree: TreeItem[]; maxAmp: number;
   procs: ProcView[]; nodes: NodeView[];
   cost: number; sourcesLeft: number; brush: number; filterMat: number; stalls: number;

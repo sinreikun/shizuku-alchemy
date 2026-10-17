@@ -116,3 +116,10 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .erasep .sw{width:10px;height:10px;border-radius:3px;background:var(--sw);flex:none}
 .tree.dragging .trow{cursor:grabbing}.trow.drop{outline:2px dashed #7dffa8;background:#7dffa822}.tree.droproot{outline:2px dashed #ffd27a;border-radius:8px}
 .trow{touch-action:none}
+/* v10：装置の調整 */
+.tune{display:grid;gap:4px}
+.amt{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px}
+.stp{display:flex;align-items:center;gap:4px}.stp b{min-width:18px;text-align:center}.stp b.chg{color:var(--acc2)}
+.stp input[type=range]{flex:1}.stp .num{width:64px}
+.nodep .rng .stp{width:100%}
+.warn{color:#ffb36e}.lock{font-size:11px}

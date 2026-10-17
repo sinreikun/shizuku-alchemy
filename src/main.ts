@@ -1,5 +1,5 @@
 import './style.css';
-import { M, MATS, PROCESSES, PROCESS_MODES, type ProcessMode } from './sim';
+import { M, MATS, PROCESSES, PROCESS_MODES, RECIPES, PORT_AMOUNT_MAX, type ProcessMode } from './sim';
 import { type Tool, type Level, type Inventory, DEVICE_MAT, isDeviceTool, starThresholds, SCALE } from './game';
 import { LEVELS, SANDBOX, CHAPTERS, LAB_PRESETS, LAB_LIMITS, clampLab } from './levels';
 import { initWindows, place as placeWindows, resetLayout } from './windows';
@@ -400,14 +400,50 @@ function renderObjPanel(box: HTMLElement, body: HTMLElement) {
       html += `<div class="muted">${PROCESSES[proc.mode].desc}</div><div class="ports">${(['入口', '出口', '補助口'] as const).map((nm, k) => `<button class="mini ${kind === 'port' && ['in', 'out', 'aux'][k] === b ? 'on' : ''}" data-port="${['in', 'out', 'aux'][k]}">${nm} (${proc.ports[k][0] > 0 ? '+' : ''}${proc.ports[k][0]}, ${proc.ports[k][1] > 0 ? '+' : ''}${proc.ports[k][1]})</button>`).join('')}</div>
         <div class="muted">ポートの丸をドラッグすると、盤面のどこへでも動かせる（装置・壁の上は不可）</div>
         ${proc.moved ? '<button class="btn" data-resetport="1">↺ ポートを元の位置に</button>' : ''}`;
-    }
+      html += procRateHTML(proc);
+    } else html += devicePowerHTML(dev);
   } else if ((kind === 'p' || kind === 'pe') && pump) {
-    html = `<div class="gl"><b>${pump.name}</b></div><div class="muted">吸込口 (${pump.ax}, ${pump.ay}) → 吐出口 (${pump.bx}, ${pump.by})<br>口をドラッグで片方、線の途中ではなく口の丸をつかむ</div>`;
+    html = `${tuneNote()}<div class="tune"><label class="rng">流量（セル/ティック）<span class="stp"><input type="range" data-pump="rate" min="1" max="40" value="${pump.rate}" ${st!.canTune ? '' : 'disabled'}><input type="number" class="num" data-pump="rate" min="1" max="40" value="${pump.rate}" ${st!.canTune ? '' : 'disabled'}></span></label>
+      <label class="rng">吸込み半径<span class="stp"><input type="range" data-pump="r" min="1" max="12" value="${pump.r}" ${st!.canTune ? '' : 'disabled'}><input type="number" class="num" data-pump="r" min="1" max="12" value="${pump.r}" ${st!.canTune ? '' : 'disabled'}></span></label></div>`
+      + `<div class="gl"><b>${pump.name}</b></div><div class="muted">吸込口 (${pump.ax}, ${pump.ay}) → 吐出口 (${pump.bx}, ${pump.by})<br>口をドラッグで片方、線の途中ではなく口の丸をつかむ</div>`;
   }
   if (!html) { box.style.display = 'none'; return; }
   box.style.display = ''; body.innerHTML = html;
   body.querySelectorAll<HTMLButtonElement>('[data-port]').forEach((x) => x.onclick = () => setSel(`port:${uid}:${x.dataset.port}`));
+  // 調整（変更ごとに元に戻す1回分）
+  const tune = async (fn: () => Promise<unknown>) => { await op('pushUndo'); const ok = await fn(); if (!ok) await op('undo'); renderNodePanel(); blip(560, 0.03); };
+  body.querySelectorAll<HTMLButtonElement>('[data-amt]').forEach((x) => x.onclick = () => { const k = Number(x.dataset.amt); const cur = proc!.amt[k]; tune(() => op('setPortAmount', uid, k, cur + Number(x.dataset.d))); });
+  body.querySelectorAll<HTMLButtonElement>('[data-prate]').forEach((x) => x.onclick = () => tune(() => op('setProcRate', uid, proc!.rate + Number(x.dataset.prate))));
+  body.querySelectorAll<HTMLInputElement>('input[data-pow]').forEach((x) => x.onchange = () => tune(() => op('setDevicePower', uid, Number(x.value))));
+  body.querySelectorAll<HTMLInputElement>('input[data-pump]').forEach((x) => x.onchange = () => tune(() => (x.dataset.pump === 'rate' ? op('setPump', uid, Number(x.value)) : op('setPump', uid, undefined, Number(x.value)))));
   body.querySelectorAll<HTMLButtonElement>('[data-resetport]').forEach((x) => x.onclick = async () => { await op('pushUndo'); await op('resetPorts', uid); renderNodePanel(); });
+}
+
+const tuneNote = () => (st!.canTune ? '' : '<div class="muted lock">🔒 ステージでは装置の設定は固定（ステージの既定値）。自由実験室で調整できる。</div>');
+const matName = (m: number) => MATS[m].name;
+/** 反応式（既定の比と、いまの量） */
+function recipeText(mode: ProcessMode, amt?: number[]) {
+  const ps = RECIPES[mode].ports, n = (k: number) => amt?.[k] ?? ps[k]!.n;
+  const ins = [0, 2].filter((k) => ps[k]?.role === 'in').map((k) => `${matName(ps[k]!.mat)}×${n(k)}`);
+  const outs = [1, 2].filter((k) => ps[k]?.role === 'out').map((k) => `${matName(ps[k]!.mat)}×${n(k)}`);
+  return `${ins.join(' ＋ ')} → ${outs.join(' ＋ ')}`;
+}
+function procRateHTML(p: GameState['procs'][number]) {
+  const PN = ['入口', '出口', '補助口']; const dis = st!.canTune ? '' : 'disabled';
+  const rows = [0, 1, 2].filter((k) => p.roles[k]).map((k) => {
+    const r = RECIPES[p.mode].ports[k]!; const changed = p.amt[k] !== r.n;
+    return `<div class="amt"><span>${PN[k]}<span class="muted">（${p.roles[k] === 'in' ? '入' : '出'}）${matName(r.mat)}</span></span><span class="stp"><button class="mini" data-amt="${k}" data-d="-1" ${dis || p.amt[k] <= 1 ? 'disabled' : ''}>−</button><b class="${changed ? 'chg' : ''}">${p.amt[k]}</b><button class="mini" data-amt="${k}" data-d="1" ${dis || p.amt[k] >= PORT_AMOUNT_MAX ? 'disabled' : ''}>＋</button></span></div>`;
+  }).join('');
+  const bal = [0, 1, 2].reduce((a, k) => a + (p.roles[k] === 'in' ? p.amt[k] : p.roles[k] === 'out' ? -p.amt[k] : 0), 0);
+  return `<h4>1回あたりの量（セル）</h4>${tuneNote()}<div class="tune">${rows}
+    <div class="amt"><span>処理回数／ティック</span><span class="stp"><button class="mini" data-prate="-1" ${dis || p.rate <= 1 ? 'disabled' : ''}>−</button><b>${p.rate}</b><button class="mini" data-prate="1" ${dis || p.rate >= 8 ? 'disabled' : ''}>＋</button></span></div></div>
+    <div class="muted">いま：${recipeText(p.mode, p.amt)}${bal ? `<br><span class="warn">セル数が ${bal > 0 ? bal + ' 減る' : -bal + ' 増える'}（既定は釣り合い：${recipeText(p.mode)}）</span>` : '（釣り合い）'}</div>`;
+}
+function devicePowerHTML(d: GameState['devices'][number]) {
+  const cfg: Record<string, [string, number, number, number, string]> = { heater: ['設定温度', 30, 1175, 5, '℃'], cooler: ['設定温度', -95, 15, 5, '℃'], igniter: ['設定温度', 300, 1175, 5, '℃'], electro: ['分解の速さ', 1, 100, 1, '%/接触'] };
+  const c = cfg[d.kind]; if (!c) return '';
+  const dis = st!.canTune ? '' : 'disabled';
+  return `<h4>出力</h4>${tuneNote()}<label class="rng">${c[0]}（${c[4]}）<span class="stp"><input type="range" data-pow="1" min="${c[1]}" max="${c[2]}" step="${c[3]}" value="${d.power}" ${dis}><input type="number" class="num" data-pow="2" min="${c[1]}" max="${c[2]}" step="${c[3]}" value="${d.power}" ${dis}></span></label>`;
 }
 
 /** 配置物ツリー（親子・折りたたみ・選択の同期） */

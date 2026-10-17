@@ -159,7 +159,7 @@ describe('エンジン', () => {
     for (let y = 18; y < 39; y++) for (let x = 1; x < 16; x++) s.set(x, y, M.WALL);
     run(s, 50);
     expect(s.stats.synthesized).toBeGreaterThanOrEqual(3);
-    expect(s.count(M.COMPOSITE)).toBe(s.stats.synthesized * 2);
+    expect(s.count(M.COMPOSITE)).toBe(s.stats.synthesized);
   });
   it('抽出器と回収器：塩水 → 晶塩、抽出液は戻る', () => {
     const s = box();

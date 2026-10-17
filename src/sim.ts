@@ -65,23 +65,47 @@ export const CH = 16; // チャンク（休眠判定）の大きさ
 
 export interface Pump { ax: number; ay: number; bx: number; by: number; rate: number; moved: number; r?: number; uid?: number; name?: string }
 
+/** 装置セルの aux に入れる設定温度（0=既定）：aux 1..255 → -95..1175℃（5℃刻み） */
+export const devTemp = (a: number) => a * 5 - 100;
+export const devAux = (temp: number) => Math.max(1, Math.min(255, Math.round((temp + 100) / 5)));
 export const PROCESS_MODES = ['electrolysis', 'combustion', 'condensation', 'crystallization', 'regeneration', 'extraction', 'recovery'] as const;
 export type ProcessMode = typeof PROCESS_MODES[number];
 /** FluidLab の7方式の循環装置（左=主入口、右=主出口、下=補助） */
 export const PROCESSES: Record<ProcessMode, { name: string; sym: string; desc: string }> = {
-  electrolysis: { name: '電解槽', sym: 'EL', desc: '主入口の水を、水素（主出口）と酸素（補助出口）へ分ける。' },
-  combustion: { name: '着火燃焼器', sym: 'FL', desc: '主入口の水素と補助入口の酸素を燃やし、主出口へ水蒸気を出す。' },
-  condensation: { name: '凝縮器', sym: 'CD', desc: '主入口の水蒸気から熱を除き、主出口へ20℃の水を戻す。' },
-  crystallization: { name: '結晶反応器', sym: 'CR', desc: '主入口の晶塩と補助入口の活性剤を混ぜ、主出口に複合結晶を作る。' },
-  regeneration: { name: '結晶再生器', sym: 'RG', desc: '主入口の複合結晶を加熱し、主出口の晶塩と補助出口の活性剤に戻す。' },
-  extraction: { name: '抽出器', sym: 'EX', desc: '主入口の塩水から晶塩を取り込み、補助入口の抽出液とともに主出口へ。水は元の槽に残る。' },
-  recovery: { name: '回収器', sym: 'RC', desc: '主入口の晶塩入り抽出液を、主出口の晶塩と補助出口の抽出液に分ける。' },
+  electrolysis: { name: '電解槽', sym: 'EL', desc: '水×2 → 水素×1（主出口）＋ 酸素×1（補助出口）。' },
+  combustion: { name: '着火燃焼器', sym: 'FL', desc: '水素×1 ＋ 酸素×1（補助入口）を燃やし、水蒸気×2を主出口へ。' },
+  condensation: { name: '凝縮器', sym: 'CD', desc: '水蒸気×1 → 20℃の水×1。' },
+  crystallization: { name: '結晶反応器', sym: 'CR', desc: '晶塩×1 ＋ 活性剤×1（補助入口）→ 複合結晶×1。' },
+  regeneration: { name: '結晶再生器', sym: 'RG', desc: '複合結晶×1 を加熱し、晶塩×1（主出口）＋ 活性剤×1（補助出口）に戻す。' },
+  extraction: { name: '抽出器', sym: 'EX', desc: '塩水×1 ＋ 抽出液×1（補助入口）→ 晶塩入り抽出液×1。塩水の跡に水×1が残る。' },
+  recovery: { name: '回収器', sym: 'RC', desc: '晶塩入り抽出液×1 → 晶塩×1（主出口）＋ 抽出液×1（補助出口）。' },
 };
 export type PortName = 'in' | 'out' | 'aux';
+/** 循環装置の1ポート：役割（入力/出力）、物質、既定の量（セル数/1回）、補助入力の吸い上げ深さ、出す温度、入力が抜けた跡に残る物 */
+export interface PortRecipe { role: 'in' | 'out'; mat: number; n: number; deep?: number; temp?: number; leave?: number }
+export type StatName = 'burned' | 'dissolved' | 'crystallized' | 'split' | 'synthesized' | 'regenerated' | 'extracted' | 'recovered';
+/**
+ * 反応表（セル数で釣り合う最小の整数比）。[入口, 出口, 補助口]。
+ * 晶塩水=晶塩+水、複合結晶=晶塩+活性剤、晶塩入り抽出液=晶塩+抽出液、として数える。
+ */
+export const RECIPES: Record<string, { ports: (PortRecipe | null)[]; stat?: StatName }> = {
+  electrolysis: { ports: [{ role: 'in', mat: M.WATER, n: 2 }, { role: 'out', mat: M.HYDROGEN, n: 1 }, { role: 'out', mat: M.OXYGEN, n: 1 }], stat: 'split' },
+  combustion: { ports: [{ role: 'in', mat: M.HYDROGEN, n: 1 }, { role: 'out', mat: M.STEAM, n: 2, temp: 300 }, { role: 'in', mat: M.OXYGEN, n: 1 }], stat: 'burned' },
+  condensation: { ports: [{ role: 'in', mat: M.STEAM, n: 1 }, { role: 'out', mat: M.WATER, n: 1 }, null] },
+  crystallization: { ports: [{ role: 'in', mat: M.SALT, n: 1 }, { role: 'out', mat: M.COMPOSITE, n: 1, temp: 55 }, { role: 'in', mat: M.ACTIVATOR, n: 1, deep: 40 }], stat: 'synthesized' },
+  regeneration: { ports: [{ role: 'in', mat: M.COMPOSITE, n: 1 }, { role: 'out', mat: M.SALT, n: 1, temp: 220 }, { role: 'out', mat: M.ACTIVATOR, n: 1, temp: 220 }], stat: 'regenerated' },
+  extraction: { ports: [{ role: 'in', mat: M.BRINE, n: 1, leave: M.WATER }, { role: 'out', mat: M.LOADED, n: 1 }, { role: 'in', mat: M.EXTRACT, n: 1, deep: 40 }], stat: 'extracted' },
+  recovery: { ports: [{ role: 'in', mat: M.LOADED, n: 1 }, { role: 'out', mat: M.SALT, n: 1 }, { role: 'out', mat: M.EXTRACT, n: 1 }], stat: 'recovered' },
+};
+export const PORT_AMOUNT_MAX = 9;
+/** ポートの量（調整済みならその値、なければ既定） */
+export function portAmount(p: Processor, k: number): number { const r = RECIPES[p.mode].ports[k]; if (!r) return 0; return p.amt?.[k] || r.n; }
 export const PORT_NAMES: Record<PortName, string> = { in: '入口', out: '出口', aux: '補助口' };
 export interface Processor {
   x: number; y: number; size: number; mode: ProcessMode; rate: number; count: number; status: string;
   uid?: number; name?: string;
+  /** ポートごとの量（1回あたりのセル数）。[入口, 出口, 補助]。0/未指定は既定 */
+  amt?: number[];
   /** 動かしたポートの中心（装置中心からのずれ）。[入口dx,dy, 出口dx,dy, 補助dx,dy]。未指定は既定の位置 */
   ports?: number[];
 }
@@ -169,8 +193,8 @@ export class Sim {
   }
   count(m: number) { let c = 0; for (let i = 0; i < this.n; i++) if (this.t[i] === m) c++; return c; }
 
-  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })), processors: this.processors.map((p) => ({ ...p, ports: p.ports?.slice() })) }; }
-  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); this.processors = s.processors.map((p) => ({ ...p, ports: p.ports?.slice() })); this.wakeAll(); }
+  snapshot() { return { t: this.t.slice(), temp: this.temp.slice(), aux: this.aux.slice(), pumps: this.pumps.map((p) => ({ ...p })), processors: this.processors.map((p) => ({ ...p, ports: p.ports?.slice(), amt: p.amt?.slice() })) }; }
+  restore(s: ReturnType<Sim['snapshot']>) { this.t.set(s.t); this.temp.set(s.temp); this.aux.set(s.aux); this.pumps = s.pumps.map((p) => ({ ...p })); this.processors = s.processors.map((p) => ({ ...p, ports: p.ports?.slice(), amt: p.amt?.slice() })); this.wakeAll(); }
 
   private canEnter(m: number, o: number, down: boolean) {
     if (o === M.EMPTY) return true;
@@ -318,7 +342,7 @@ export class Sim {
         const i = y * w + x; const m = t[i];
         if (m === M.WALL || m === M.PWALL || m === M.GLASS || m === M.GUIDE || m === M.MOVER) continue;
         const def = MATS[m];
-        if (m === M.HEATER || m === M.COOLER || m === M.IGNITER) { tp[i] = def.temp; continue; }
+        if (m === M.HEATER || m === M.COOLER || m === M.IGNITER) { tp[i] = this.aux[i] ? devTemp(this.aux[i]) : def.temp; continue; }
         let avg: number;
         if (m === M.EMPTY) avg = (tp[i - 1] + tp[i + 1] + tp[i - w] + tp[i + w]) * 0.25;
         else {
@@ -409,7 +433,7 @@ export class Sim {
           case M.MERCURY: if (v >= 357) t[i] = M.HGVAPOR; break;
           case M.HGVAPOR: if (v < 340) t[i] = M.MERCURY; break;
           case M.ELECTRO:
-            if ((o === M.WATER || o === M.BRINE) && this.rnd() < 0.1) {
+            if ((o === M.WATER || o === M.BRINE) && this.rnd() < (this.aux[i] ? this.aux[i] / 100 : 0.1)) {
               const gas = (this.stats.split & 1) ? M.OXYGEN : M.HYDROGEN;
               if (o === M.BRINE) { const e = this.emptyNear(j); if (e < 0) break; t[j] = M.SALT; t[e] = gas; tp[e] = 20; }
               else { t[j] = gas; tp[j] = 20; }
@@ -467,24 +491,22 @@ export class Sim {
   }
   private runProcessors() {
     const { t, temp: tp } = this;
+    const PN: PortName[] = ['in', 'out', 'aux'];
     for (const p of this.processors) {
-      const pin = this.portCells(p, 'in'), pout = this.portCells(p, 'out'), paux = this.portCells(p, 'aux');
+      const rc = RECIPES[p.mode];
+      const cells = PN.map((pn) => (rc.ports[PN.indexOf(pn)] ? this.portCells(p, pn) : []));
       let done = 0;
       for (let n = 0; n < p.rate; n++) {
         const used = new Set<number>();
-        const put = (cells: number[], m: number, temp = 20) => { for (const i of cells) { t[i] = m; tp[i] = temp; this.wake(i); } };
-        const clear = (cells: number[]) => { for (const i of cells) { t[i] = M.EMPTY; this.wake(i); } };
-        let ok = false;
-        switch (p.mode) {
-          case 'electrolysis': { const a = this.takeAt(pin, M.WATER, 2, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.HYDROGEN); put(o2, M.OXYGEN); ok = true; this.stats.split++; } break; }
-          case 'combustion': { const a = this.takeAt(pin, M.HYDROGEN, 1, used), b = this.takeAt(paux, M.OXYGEN, 1, used, 0); const o = this.emptyAt(pout, 2, used); if (a.length && b.length && o.length) { clear(a); clear(b); put(o, M.STEAM, 300); ok = true; this.stats.burned++; } break; }
-          case 'condensation': { const a = this.takeAt(pin, M.STEAM, 1, used); const o = this.emptyAt(pout, 1, used); if (a.length && o.length) { clear(a); put(o, M.WATER); ok = true; } break; }
-          case 'crystallization': { const a = this.takeAt(pin, M.SALT, 1, used), b = this.takeAt(paux, M.ACTIVATOR, 1, used, 40); const o = this.emptyAt(pout, 2, used); if (a.length && b.length && o.length) { clear(a); clear(b); put(o, M.COMPOSITE, 55); ok = true; this.stats.synthesized++; } break; }
-          case 'regeneration': { const a = this.takeAt(pin, M.COMPOSITE, 2, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.SALT, 220); put(o2, M.ACTIVATOR, 220); ok = true; this.stats.regenerated++; } break; }
-          case 'extraction': { const a = this.takeAt(pin, M.BRINE, 1, used), b = this.takeAt(paux, M.EXTRACT, 1, used, 40); const o = this.emptyAt(pout, 1, used); if (a.length && b.length && o.length) { t[a[0]] = M.WATER; this.wake(a[0]); clear(b); put(o, M.LOADED); ok = true; this.stats.extracted++; } break; }
-          case 'recovery': { const a = this.takeAt(pin, M.LOADED, 1, used); const o1 = this.emptyAt(pout, 1, used), o2 = this.emptyAt(paux, 1, used); if (a.length && o1.length && o2.length) { clear(a); put(o1, M.SALT); put(o2, M.EXTRACT); ok = true; this.stats.recovered++; } break; }
-        }
+        const takes: number[][] = [], puts: number[][] = [];
+        let ok = true;
+        // 入力を先に確保（入口→補助）、次に出力の空き（出口→補助）
+        for (const k of [0, 2]) { const r = rc.ports[k]; if (!r || r.role !== 'in') { takes[k] = []; continue; } const a = this.takeAt(cells[k], r.mat, portAmount(p, k), used, r.deep ?? 0); if (!a.length) ok = false; takes[k] = a; }
+        for (const k of [1, 2]) { const r = rc.ports[k]; if (!r || r.role !== 'out') { puts[k] = []; continue; } const a = this.emptyAt(cells[k], portAmount(p, k), used); if (!a.length) ok = false; puts[k] = a; }
         if (!ok) break;
+        for (const k of [0, 2]) { const r = rc.ports[k]; if (!r || r.role !== 'in') continue; for (const i of takes[k]) { t[i] = r.leave ?? M.EMPTY; this.wake(i); } }
+        for (const k of [1, 2]) { const r = rc.ports[k]; if (!r || r.role !== 'out') continue; for (const i of puts[k]) { t[i] = r.mat; tp[i] = r.temp ?? 20; this.wake(i); } }
+        if (rc.stat) this.stats[rc.stat]++;
         done++;
       }
       p.count += done;

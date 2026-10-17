@@ -1,5 +1,5 @@
 // ゲーム進行（DOMに依存しない。テスト・Web Worker から使う）
-import { Sim, M, MATS, KIND, PROCESS_MODES, PROCESSES, PORT_NAMES, portOffset, defaultPortOffset, clampPortOffset, type ProcessMode, type Pump, type PortName } from './sim';
+import { Sim, M, MATS, KIND, PROCESS_MODES, PROCESSES, RECIPES, PORT_AMOUNT_MAX, devAux, devTemp, PORT_NAMES, portOffset, defaultPortOffset, clampPortOffset, type ProcessMode, type Pump, type PortName } from './sim';
 import { Mech, newNode, JOINT_NAMES, type MechNode } from './mech';
 
 /** 置いた物の名前の元になる呼び名 */
@@ -64,7 +64,7 @@ export interface Level {
   limit?: number;
 }
 
-export interface Device { kind: DeviceTool | 'proc'; x: number; y: number; mode?: ProcessMode; uid?: number; name?: string }
+export interface Device { kind: DeviceTool | 'proc'; x: number; y: number; mode?: ProcessMode; uid?: number; name?: string; /** 設定（温度℃ または 電解の確率%）。未指定は既定 */ power?: number }
 
 const replaceable = (o: number, sandbox: boolean, devices = false) => {
   if (o === M.EMPTY) return true;
@@ -470,6 +470,44 @@ export class Game {
     const k = PORTS.indexOf(port) * 2;
     if (p.ports[k] === cx && p.ports[k + 1] === cy) return false;
     p.ports[k] = cx; p.ports[k + 1] = cy; this.sim.wakeAll();
+    return true;
+  }
+  /** 調整はステージでは固定（ステージの既定値）。自由実験室だけで変えられる */
+  get canTune() { return this.sandbox; }
+  /** 循環装置のポートの量（1回あたりのセル数 1..9） */
+  setPortAmount(uid: number, k: number, n: number) {
+    if (!this.canTune) return false;
+    const p = this.sim.processors.find((q) => q.uid === uid); if (!p) return false;
+    const r = RECIPES[p.mode].ports[k]; if (!r) return false;
+    n = Math.max(1, Math.min(PORT_AMOUNT_MAX, Math.round(n)));
+    p.amt = p.amt ?? [0, 0, 0]; p.amt[k] = n === r.n ? 0 : n;
+    if (!p.amt.some((v) => v)) delete p.amt;
+    return true;
+  }
+  /** 循環装置の1ティックあたりの処理回数 */
+  setProcRate(uid: number, rate: number) {
+    if (!this.canTune) return false;
+    const p = this.sim.processors.find((q) => q.uid === uid); if (!p) return false;
+    p.rate = Math.max(1, Math.min(8, Math.round(rate))); return true;
+  }
+  /** 装置の強さ：ヒーター・クーラー・着火器は設定温度、簡易電解板は分解の確率% */
+  setDevicePower(uid: number, power: number) {
+    if (!this.canTune) return false;
+    const d = this.devices.find((q) => q.uid === uid); if (!d || d.kind === 'proc') return false;
+    const lim: Record<string, [number, number]> = { heater: [30, 1175], cooler: [-95, 15], igniter: [300, 1175], electro: [1, 100] };
+    const [lo, hi] = lim[d.kind]; const v = Math.max(lo, Math.min(hi, Math.round(power)));
+    const aux = d.kind === 'electro' ? v : devAux(v);
+    const [a, b] = this.devRange(), s = this.sim;
+    for (let j = a; j <= b; j++) for (let i = a; i <= b; i++) { const x = d.x + i, y = d.y + j; if (s.inside(x, y)) { s.aux[y * s.w + x] = aux; s.wake(y * s.w + x); } }
+    d.power = d.kind === 'electro' ? v : devTemp(aux);
+    return true;
+  }
+  /** ポンプの流量（1ティックあたりのセル数）と吸込み半径 */
+  setPump(uid: number, rate?: number, r?: number) {
+    if (!this.canTune) return false;
+    const p = this.sim.pumps.find((q) => q.uid === uid); if (!p) return false;
+    if (rate !== undefined) p.rate = Math.max(1, Math.min(40, Math.round(rate)));
+    if (r !== undefined) p.r = Math.max(1, Math.min(12, Math.round(r)));
     return true;
   }
   resetPorts(uid: number) { const p = this.sim.processors.find((q) => q.uid === uid); if (!p || !p.ports) return false; delete p.ports; return true; }

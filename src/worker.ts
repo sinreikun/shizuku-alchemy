@@ -2,7 +2,7 @@
 // 画像バッファは Transferable でメインと往復させる（SharedArrayBuffer 不要）。
 import { Game, SCALE, resizeLab, type Tool } from './game';
 import { LEVELS, labLevel } from './levels';
-import { M, MATS, CH, portOffset, type PortName } from './sim';
+import { M, MATS, CH, portOffset, portAmount, RECIPES, type PortName } from './sim';
 import { paint } from './render';
 import type { ToWorker, FromWorker, GameState, NodeView } from './protocol';
 
@@ -26,10 +26,10 @@ function state(): GameState {
   return {
     w: s.w, h: s.h, S: g.S, inv: { ...g.inv }, invBase: { ...g.invBase }, progress: [...g.progress], emitted: [...g.emitted],
     flowing: g.flowing, won: g.won, ticks: g.ticks, canUndo: g.canUndo, canRedo: g.canRedo, pendingPump: g.pendingPump,
-    pumps: s.pumps.map((p) => ({ ax: p.ax, ay: p.ay, bx: p.bx, by: p.by, uid: p.uid ?? 0, name: p.name ?? '' })),
-    devices: g.devices.map((d) => ({ uid: d.uid ?? 0, name: d.name ?? '', kind: d.kind, x: d.x, y: d.y })),
+    pumps: s.pumps.map((p) => ({ ax: p.ax, ay: p.ay, bx: p.bx, by: p.by, uid: p.uid ?? 0, name: p.name ?? '', rate: p.rate, r: p.r ?? 2 })),
+    devices: g.devices.map((d) => ({ uid: d.uid ?? 0, name: d.name ?? '', kind: d.kind, x: d.x, y: d.y, power: d.power ?? (d.kind === 'electro' ? 10 : d.kind === 'proc' ? 0 : MATS[{ heater: M.HEATER, cooler: M.COOLER, igniter: M.IGNITER }[d.kind as 'heater']].temp) })), canTune: g.canTune,
     tree: g.tree(), maxAmp: g.maxAmp(),
-    procs: s.processors.map((p) => ({ x: p.x, y: p.y, size: p.size, mode: p.mode, count: p.count, status: p.status, uid: p.uid ?? 0, name: p.name ?? '', moved: !!p.ports, ports: (['in', 'out', 'aux'] as PortName[]).map((pn) => portOffset(p, pn)) })),
+    procs: s.processors.map((p) => ({ x: p.x, y: p.y, size: p.size, mode: p.mode, count: p.count, status: p.status, uid: p.uid ?? 0, name: p.name ?? '', moved: !!p.ports, rate: p.rate, amt: [0, 1, 2].map((k) => portAmount(p, k)), roles: RECIPES[p.mode].ports.map((r) => (r ? r.role : '')), ports: (['in', 'out', 'aux'] as PortName[]).map((pn) => portOffset(p, pn)) })),
     nodes, cost: g.cost(), sourcesLeft: g.sourcesLeft, brush: g.brush, filterMat: g.filterMat, stalls: g.mech.stalls,
     simMs, awake: s.awakeChunks, chunks: s.cw * s.chh,
     hover: s.inside(hx, hy) ? { m: s.t[hy * s.w + hx], temp: s.temp[hy * s.w + hx] } : null,
@@ -105,6 +105,10 @@ const OPS: Record<string, (...a: never[]) => unknown> = {
   resizeLab: (lw: number, lh: number, ax: number, ay: number) => { const old = game!; if (!old.sandbox) return false; game = hook(resizeLab(old, labLevel(lw, lh), ax, ay, seed)); return { w: game.sim.w, h: game.sim.h }; },
   setEraseFilter: (mats: number[] | null, objs: Record<string, boolean>) => { game!.setEraseFilter(mats, objs); return true; },
   eraseRegion: (poly: number[]) => game!.eraseRegion(poly),
+  setPortAmount: (uid: number, k: number, n: number) => game!.setPortAmount(uid, k, n),
+  setProcRate: (uid: number, r: number) => game!.setProcRate(uid, r),
+  setDevicePower: (uid: number, v: number) => game!.setDevicePower(uid, v),
+  setPump: (uid: number, rate?: number, r?: number) => game!.setPump(uid, rate, r),
   fillRect: (tool: Tool, x0: number, y0: number, x1: number, y1: number) => game!.fillRect(tool, x0, y0, x1, y1),
   reparent: (id: number, parent: number) => game!.reparent(id, parent),
   /** テスト用：勝つまで（または上限まで）一気に進める */

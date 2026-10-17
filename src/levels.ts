@@ -253,10 +253,10 @@ export const LEVELS: Level[] = [
   {
     id: 'p1', chapter: 'proc', title: '結晶反応器', learn: '循環装置（結晶反応器）',
     story: '晶塩と活性剤を反応させて、重い複合結晶を作ろう。装置は左が主入口、下が補助入口、右が主出口。',
-    hint: '結晶反応器を、活性剤の筒の真上・屋根の下に置こう。左に晶塩、下に活性剤が触れていれば、右へ複合結晶が出てくる。',
+    hint: '結晶反応器を、活性剤の筒の真上・屋根の下に置こう。左に晶塩、下に活性剤が触れていれば、晶塩1＋活性剤1から右へ複合結晶1が出てくる。',
     inv: { proc: 1 }, procModes: ['crystallization'],
     sources: [{ x: 74, y: 6, mats: [M.SALT], rate: 1, total: 260 }], drains: [],
-    goals: [{ x: 82, y: 80, w: 20, h: 12, mat: M.COMPOSITE, need: 40, mode: 'absorb', label: '複合結晶' }],
+    goals: [{ x: 82, y: 80, w: 20, h: 12, mat: M.COMPOSITE, need: 24, mode: 'absorb', label: '複合結晶' }],
     build(s) { frame(s); rect(s, 66, 74, 11, 1); rect(s, 77, 74, 1, 18); rect(s, 80, 74, 1, 18); rect(s, 77, 90, 4, 2); fill(s, 78, 74, 2, 16, () => M.ACTIVATOR); cup(s, 82, 80, 20, 12); rect(s, 78, 70, 12, 1); },
     solve(g) { g.lproc('crystallization', 79, 72); },
     eco(g) { g.lproc('crystallization', 79, 72); },
@@ -287,7 +287,7 @@ export const LEVELS: Level[] = [
   {
     id: 'p3', chapter: 'proc', title: '結晶の再生', learn: '結晶再生器',
     story: '使い終わった複合結晶が棚に積もっている。加熱して、晶塩と活性剤に分け直そう。',
-    hint: '結晶再生器を棚の右端・屋根の下に置く。左の複合結晶2つから、右へ晶塩、下へ活性剤が出る。',
+    hint: '結晶再生器を棚の右端・屋根の下に置く。左の複合結晶1つから、右へ晶塩1、下へ活性剤1が出る。',
     inv: { proc: 1 }, procModes: ['regeneration'],
     sources: [], drains: [],
     goals: [{ x: 82, y: 80, w: 20, h: 12, mat: M.SALT, need: 40, mode: 'absorb', label: '晶塩' }],
